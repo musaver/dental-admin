@@ -14,22 +14,14 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   if (status === 'loading') return null;
   if (!session) return <div>{children}</div>;
 
+  // Dental clinic navigation. Sections are added as their modules land; this
+  // list becomes permission-filtered (against the 31 seeded permission slugs)
+  // once the RBAC layer is in place.
   const navigation = [
     { name: 'Dashboard', href: '/', icon: '📊' },
-    { name: 'Users', href: '/users', icon: '👥' },
-    { name: 'Courses', href: '/courses', icon: '📚' },
-    { name: 'Batches', href: '/batches', icon: '📦' },
-    { name: 'Classes', href: '/classes', icon: '🏫' },
-    { name: 'Tasks', href: '/tasks', icon: '📝' },
-    { name: 'Recordings', href: '/recordings', icon: '🎥' },
-    { name: 'Announcements', href: '/announcements', icon: '📢' },
-    { name: 'Popups', href: '/popups', icon: '🖼️' },
-    { name: 'Orders', href: '/orders', icon: '🛒' },
-    { name: 'Fee Calculations', href: '/fee-calculations', icon: '💰' },
-    { name: 'Attendance', href: '/attendance', icon: '📅' },
-    { name: 'Admin Users', href: '/admins', icon: '👮' },
-    { name: 'Admin Roles', href: '/roles', icon: '🔐' },
-    { name: 'Admin Logs', href: '/logs', icon: '📋' },
+    { name: 'Staff', href: '/admins', icon: '👮' },
+    { name: 'Roles', href: '/roles', icon: '🔐' },
+    { name: 'Portal Accounts', href: '/users', icon: '👥' },
     { name: 'Logout', href: '/logout', icon: '👋' },
   ];
 

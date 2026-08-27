@@ -28,10 +28,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate directory parameter
-    const allowedDirectories = ['courses', 'batches', 'general'];
+    const allowedDirectories = ['logos', 'signatures', 'general'];
     if (!allowedDirectories.includes(directory)) {
-      return NextResponse.json({ 
-        error: 'Invalid directory. Allowed directories: courses, batches, general' 
+      return NextResponse.json({
+        error: `Invalid directory. Allowed directories: ${allowedDirectories.join(', ')}`,
       }, { status: 400 });
     }
 
@@ -39,7 +39,11 @@ export async function POST(request: NextRequest) {
     const timestamp = Date.now();
     const fileName = `${directory}/${timestamp}-${file.name}`;
 
-    // Upload to Vercel Blob
+    // NOTE: `access: 'public'` is acceptable only for the non-clinical
+    // directories allow-listed above (clinic logos, staff signatures).
+    // Patient files — X-rays, intraoral photos, consent scans — must NOT use
+    // this route: they need private blobs behind a signed-URL proxy, plus
+    // client-side direct upload to get past Vercel's 4.5 MB request body cap.
     const blob = await put(fileName, file, {
       access: 'public',
     });

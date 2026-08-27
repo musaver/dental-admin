@@ -2,6 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { user } from '@/lib/schema';
 import { eq } from 'drizzle-orm';
+import { z } from 'zod';
+
+// Explicit allowlist — never spread the request body into `.set()`.
+const updateSchema = z
+  .object({
+    email: z.string().email().max(255),
+    name: z.string().max(255).nullable(),
+    firstName: z.string().max(100).nullable(),
+    lastName: z.string().max(100).nullable(),
+    displayName: z.string().max(100).nullable(),
+    phone: z.string().max(20).nullable(),
+    address: z.string().max(100).nullable(),
+    city: z.string().max(100).nullable(),
+    state: z.string().max(100).nullable(),
+    country: z.string().max(100).nullable(),
+    profilePicture: z.string().max(255).nullable(),
+  })
+  .partial();
 
 export async function GET(
   req: NextRequest,
@@ -30,11 +48,17 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const data = await req.json();
+    const parsed = updateSchema.safeParse(await req.json());
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Invalid input', details: parsed.error.flatten().fieldErrors },
+        { status: 400 }
+      );
+    }
 
     await db
       .update(user)
-      .set(data)
+      .set({ ...parsed.data, updatedAt: new Date() })
       .where(eq(user.id, id));
 
     const updatedUser = await db.query.user.findFirst({

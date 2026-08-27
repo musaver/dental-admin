@@ -1,5 +1,9 @@
-// Money helpers for the Fee Calculations module.
-// All amounts are whole PKR integers (matching courses.price).
+// Money helpers.
+//
+// Every monetary column in the schema is `int` and holds WHOLE PKR — not
+// paisa. Never divide by 100. Confirmed against the seeded `procedures` price
+// list (Consultation 1000, RCT-Molar 22000, Fixed Braces 150000) and
+// `clinic_settings.currency = 'PKR'`.
 
 export function formatPKR(amount: number | null | undefined): string {
   const n = Number(amount || 0);

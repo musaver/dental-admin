@@ -7,8 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "db:push": "drizzle-kit push",
-    "db:generate": "drizzle-kit generate:mysql",
+    "db:push:DANGER": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
@@ -30,7 +30,6 @@
     "next-auth": "^4.24.11",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sib-api-v3-sdk": "^8.5.0",
     "tailwind-merge": "^3.6.0",
     "uuid": "^11.1.0",
     "zod": "^3.24.4"
