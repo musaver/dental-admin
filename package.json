@@ -9,7 +9,11 @@
     "lint": "next lint",
     "db:push:DANGER": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
-    "db:studio": "drizzle-kit studio"
+    "db:migrate": "drizzle-kit migrate",
+    "db:baseline": "node scripts/baseline-migrations.mjs",
+    "db:studio": "drizzle-kit studio",
+    "check:relations": "jiti scripts/check-relations.mjs",
+    "check": "tsc --noEmit && npm run check:relations"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.9.1",
