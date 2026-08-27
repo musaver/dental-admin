@@ -11,6 +11,9 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // Test files run on Node's built-in runner, which resolves real paths and
+    // therefore needs explicit .ts specifiers. Safe here because noEmit is on.
+    "allowImportingTsExtensions": true,
     "jsx": "preserve",
     "incremental": true,
     "plugins": [

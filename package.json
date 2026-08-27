@@ -13,7 +13,9 @@
     "db:baseline": "node scripts/baseline-migrations.mjs",
     "db:studio": "drizzle-kit studio",
     "check:relations": "jiti scripts/check-relations.mjs",
-    "check": "tsc --noEmit && npm run check:relations"
+    "check": "tsc --noEmit && npm run check:relations",
+    "test": "node --test \"lib/**/*.test.ts\"",
+    "test:timezones": "TZ=UTC npm test && TZ=Asia/Karachi npm test"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.9.1",
