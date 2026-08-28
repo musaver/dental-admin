@@ -19,7 +19,8 @@
     "check:enums": "jiti scripts/check-enums.mjs",
     "check:rbac": "jiti scripts/check-rbac.mjs",
     "check:invariants": "node scripts/check-invariants.mjs",
-    "repair:orphans": "node scripts/repair-orphans.mjs"
+    "repair:orphans": "node scripts/repair-orphans.mjs",
+    "check:patients": "jiti scripts/check-patients.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.9.1",
