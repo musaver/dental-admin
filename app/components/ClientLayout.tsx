@@ -28,8 +28,18 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   // The portal has its own shell; bail out before rendering any admin chrome.
   if (pathname.startsWith('/portal')) return <>{children}</>;
 
-  if (status === 'loading') return null;
-  if (!session) return <>{children}</>;
+  /*
+   * Render the page during session resolution rather than returning null.
+   *
+   * useSession reports 'loading' on the server and on first client paint, so
+   * returning null here meant EVERY page shipped an empty document and only
+   * appeared after hydration — a blank flash on every navigation, and nothing
+   * at all for a crawler or a slow connection.
+   *
+   * The sidebar simply arrives once the session resolves; the page itself
+   * never waits for it.
+   */
+  if (status === 'loading' || !session) return <>{children}</>;
 
   const user = session.user;
   const branchLabel = user.branchId ? null : 'All branches';

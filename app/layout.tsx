@@ -4,8 +4,8 @@ import "./globals.css";
 import ClientLayoutWrapper from "./components/ClientLayoutWrapper"; // NEW wrapper
 
 export const metadata: Metadata = {
-  title: "Admin Panel",
-  description: "Course management admin panel",
+  title: "Dental Clinic",
+  description: "Patient records, appointments and billing for the clinic",
 };
 
 const geistSans = Geist({
