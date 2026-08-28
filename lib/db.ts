@@ -3,7 +3,12 @@ import mysql from 'mysql2/promise';
 import * as schema from './schema';
 import * as relations from './relations';
 
-const pool = mysql.createPool({
+/**
+ * Exported for the rare paths that need raw, streaming access — the full data
+ * export pages through tables with pool.query directly. Everything else goes
+ * through `db`.
+ */
+export const pool = mysql.createPool({
   host: process.env.DB_HOST!,
   user: process.env.DB_USER!,
   password: process.env.DB_PASS!,

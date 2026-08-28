@@ -223,9 +223,9 @@ export function withAuth<TArgs extends unknown[]>(
     req: Request,
     ctx: StaffContext,
     ...args: TArgs
-  ) => Promise<NextResponse> | NextResponse
+  ) => Promise<Response> | Response
 ) {
-  return async (req: Request, ...args: TArgs): Promise<NextResponse> => {
+  return async (req: Request, ...args: TArgs): Promise<Response> => {
     try {
       const ctx = permission ? await requirePermission(permission) : await requireStaff();
       return await handler(req, ctx, ...args);
