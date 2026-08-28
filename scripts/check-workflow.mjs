@@ -190,6 +190,10 @@ try {
     // Break the lead<->patient pointer before deleting.
     await conn.query(`UPDATE patients SET leadId = NULL WHERE id IN (${made.patients.map(() => '?').join(',')})`, made.patients);
   }
+  if (made.leads.length) {
+    await conn.query(`DELETE FROM lead_activities WHERE leadId IN (${made.leads.map(() => '?').join(',')})`, made.leads);
+    await conn.query(`DELETE FROM communication_logs WHERE leadId IN (${made.leads.map(() => '?').join(',')})`, made.leads);
+  }
   await conn.query('DELETE FROM audit_logs WHERE actorId = ?', [staffId]);
   for (const [table, ids] of order) {
     if (!ids || !ids.length) continue;
