@@ -28,7 +28,9 @@
     "check:leads": "jiti scripts/check-leads.mjs",
     "check:reminders": "node scripts/check-reminders.mjs",
     "check:export": "node scripts/check-export.mjs",
-    "check:portal": "node scripts/check-portal.mjs"
+    "check:portal": "node scripts/check-portal.mjs",
+    "check:pages": "node scripts/check-pages.mjs",
+    "check:workflow": "node scripts/check-workflow.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.9.1",
