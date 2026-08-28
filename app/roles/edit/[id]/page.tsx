@@ -1,188 +1,66 @@
 'use client';
-import React, { useState, useEffect } from 'react';
-import { useRouter, useParams } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 
-const permissions = [
-  { id: 'users_view', label: 'View Users' },
-  { id: 'users_create', label: 'Create Users' },
-  { id: 'users_edit', label: 'Edit Users' },
-  { id: 'users_delete', label: 'Delete Users' },
-  { id: 'courses_view', label: 'View Courses' },
-  { id: 'courses_create', label: 'Create Courses' },
-  { id: 'courses_edit', label: 'Edit Courses' },
-  { id: 'courses_delete', label: 'Delete Courses' },
-  { id: 'orders_view', label: 'View Orders' },
-  { id: 'orders_create', label: 'Create Orders' },
-  { id: 'orders_edit', label: 'Edit Orders' },
-  { id: 'orders_delete', label: 'Delete Orders' },
-  { id: 'admins_view', label: 'View Admins' },
-  { id: 'admins_create', label: 'Create Admins' },
-  { id: 'admins_edit', label: 'Edit Admins' },
-  { id: 'admins_delete', label: 'Delete Admins' },
-  { id: 'roles_view', label: 'View Roles' },
-  { id: 'roles_create', label: 'Create Roles' },
-  { id: 'roles_edit', label: 'Edit Roles' },
-  { id: 'roles_delete', label: 'Delete Roles' },
-  { id: 'logs_view', label: 'View Logs' },
-];
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
+import RoleForm from '@/app/components/RoleForm';
+import { api, ApiError } from '@/lib/api-client';
 
-export default function EditRole() {
-  const router = useRouter();
-  const params = useParams();
-  const roleId = params.id as string;
-  
-  const [formData, setFormData] = useState({
-    name: '',
-    permissions: [] as string[],
-  });
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
+interface RoleResponse {
+  id: string;
+  name: string;
+  permissions: string | string[];
+}
+
+export default function EditRolePage() {
+  const { id } = useParams<{ id: string }>();
+  const [role, setRole] = useState<{ name: string; permissions: string[] } | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch(`/api/roles/${roleId}`)
-      .then(res => res.json())
-      .then(data => {
-        setFormData({
-          name: data.name || '',
-          permissions: JSON.parse(data.permissions || '[]'),
-        });
-        setLoading(false);
+    api
+      .get<RoleResponse>(`/api/roles/${id}`)
+      .then((r) => {
+        // The column is `text` holding JSON, so the API may hand back either
+        // an array or the raw string. One malformed row must not blank the form.
+        let permissions: string[] = [];
+        if (Array.isArray(r.permissions)) {
+          permissions = r.permissions;
+        } else if (typeof r.permissions === 'string') {
+          try {
+            const parsed = JSON.parse(r.permissions);
+            if (Array.isArray(parsed)) permissions = parsed;
+          } catch {
+            permissions = [];
+          }
+        }
+        setRole({ name: r.name, permissions });
       })
-      .catch(err => {
-        console.error(err);
-        setError('Failed to load role');
-        setLoading(false);
-      });
-  }, [roleId]);
+      .catch((err) =>
+        setError(err instanceof ApiError ? err.message : 'Could not load this role.')
+      );
+  }, [id]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
-    
-    if (type === 'checkbox') {
-      const permissionId = name;
-      if (checked) {
-        setFormData(prev => ({
-          ...prev,
-          permissions: [...prev.permissions, permissionId]
-        }));
-      } else {
-        setFormData(prev => ({
-          ...prev,
-          permissions: prev.permissions.filter(id => id !== permissionId)
-        }));
-      }
-    } else {
-      setFormData(prev => ({
-        ...prev,
-        [name]: value
-      }));
-    }
-  };
+  if (error) {
+    return (
+      <div className="p-4">
+        <div role="alert" className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      </div>
+    );
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError('');
-
-    try {
-      const response = await fetch(`/api/roles/${roleId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: formData.name,
-          permissions: JSON.stringify(formData.permissions),
-        }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to update role');
-      }
-
-      router.push('/roles');
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (loading) return <div className="p-4 text-muted-foreground">Loading...</div>;
+  if (!role) return <div className="p-4 text-muted-foreground">Loading…</div>;
 
   return (
     <div className="p-4">
-      <h1 className="text-2xl font-bold tracking-tight mb-6">Edit Role</h1>
-
-      {error && (
-        <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
-          {error}
-        </div>
-      )}
-
-      <Card className="max-w-lg">
-        <CardHeader>
-          <CardTitle className="text-base">Role Details</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit}>
-            <div className="mb-6 space-y-2">
-              <Label htmlFor="name">
-                Role Name
-              </Label>
-              <Input
-                type="text"
-                id="name"
-                name="name"
-                value={formData.name}
-                onChange={handleChange}
-                required
-              />
-            </div>
-
-            <div className="mb-6">
-              <h3 className="text-lg font-medium mb-3">Permissions</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {permissions.map((permission) => (
-                  <div key={permission.id} className="flex items-center">
-                    <input
-                      type="checkbox"
-                      id={permission.id}
-                      name={permission.id}
-                      onChange={handleChange}
-                      checked={formData.permissions.includes(permission.id)}
-                      className="mr-2"
-                    />
-                    <Label htmlFor={permission.id}>{permission.label}</Label>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <Button
-                type="submit"
-                disabled={submitting}
-              >
-                {submitting ? 'Saving...' : 'Save Changes'}
-              </Button>
-              <Button
-                type="button"
-                onClick={() => router.push('/roles')}
-                variant="secondary"
-              >
-                Cancel
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+      <h1 className="text-2xl font-bold tracking-tight mb-6">Edit role</h1>
+      <RoleForm
+        mode="edit"
+        roleId={id}
+        initialName={role.name}
+        initialPermissions={role.permissions}
+      />
     </div>
   );
 }

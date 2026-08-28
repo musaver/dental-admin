@@ -135,6 +135,44 @@ try {
   await conn.execute('DELETE FROM login_attempts WHERE email = ?', [probeEmail]);
 }
 
+
+/* 5. Lockout guard: could removing roles_manage strand the clinic? --- */
+
+const [holders] = await conn.query(
+  `SELECT r.name, r.permissions, COUNT(u.id) AS activeStaff
+     FROM admin_roles r
+     LEFT JOIN admin_users u ON u.roleId = r.id AND u.isActive = 1
+    GROUP BY r.id, r.name, r.permissions`
+);
+
+const rolesManageHolders = holders.filter(
+  (r) => parsePermissions(r.permissions).includes(PERMISSIONS.ROLES_MANAGE) && Number(r.activeStaff) > 0
+);
+
+check(
+  'at least one active staff member can manage roles',
+  rolesManageHolders.length > 0,
+  rolesManageHolders.map((r) => `${r.name} (${r.activeStaff})`).join(', ') || 'NOBODY'
+);
+
+const staffManageHolders = holders.filter(
+  (r) => parsePermissions(r.permissions).includes(PERMISSIONS.STAFF_MANAGE) && Number(r.activeStaff) > 0
+);
+check(
+  'at least one active staff member can manage staff',
+  staffManageHolders.length > 0,
+  staffManageHolders.map((r) => `${r.name} (${r.activeStaff})`).join(', ') || 'NOBODY'
+);
+
+// If only one role grants it, the guard in PUT /api/roles/[id] is the only
+// thing standing between an edit and a locked-out clinic.
+if (rolesManageHolders.length === 1) {
+  console.log(
+    `  note  only "${rolesManageHolders[0].name}" grants roles_manage — the ` +
+      `WOULD_LOCK_OUT guard is load-bearing here`
+  );
+}
+
 await conn.end();
 
 if (failed) {

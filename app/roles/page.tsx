@@ -1,7 +1,9 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import {
   Table,
@@ -11,100 +13,172 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { api, ApiError } from '@/lib/api-client';
+import { fmtDate } from '@/lib/datetime';
+import {
+  ALL_PERMISSIONS,
+  CLINICAL_PERMISSIONS,
+  FINANCIAL_PERMISSIONS,
+  PERMISSION_GROUPS,
+} from '@/lib/permissions';
 
-export default function RolesList() {
-  const [roles, setRoles] = useState([]);
+interface Role {
+  id: string;
+  name: string;
+  permissions: string[];
+  staffCount: number;
+  createdAt: string;
+}
+
+export default function RolesPage() {
+  const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const fetchRoles = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
-      const res = await fetch('/api/roles');
-      const data = await res.json();
-      setRoles(data);
+      setRoles(await api.get<Role[]>('/api/roles'));
     } catch (err) {
-      console.error(err);
+      setError(err instanceof ApiError ? err.message : 'Could not load roles.');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchRoles();
   }, []);
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this role?')) {
-      try {
-        await fetch(`/api/roles/${id}`, { method: 'DELETE' });
-        setRoles(roles.filter((role: any) => role.id !== id));
-      } catch (error) {
-        console.error('Error deleting role:', error);
-      }
-    }
-  };
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  if (loading) return <div className="p-4 text-muted-foreground">Loading...</div>;
+  async function remove(role: Role) {
+    if (!confirm(`Delete the "${role.name}" role?`)) return;
+    try {
+      await api.del(`/api/roles/${role.id}`);
+      load();
+    } catch (err) {
+      // The API refuses to delete a role that staff still use, because
+      // admin_users.roleId has no foreign key and they would be left pointing
+      // at nothing.
+      setError(err instanceof ApiError ? err.message : 'Could not delete this role.');
+    }
+  }
+
+  /** Which groups a role touches — far more readable than 31 slugs. */
+  const groupsFor = (permissions: string[]) =>
+    PERMISSION_GROUPS.filter((g) => g.permissions.some((p) => permissions.includes(p.slug))).map(
+      (g) => g.label
+    );
 
   return (
     <div className="p-4">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Admin Roles</h1>
-        <div className="flex gap-2">
-          <Button onClick={fetchRoles} disabled={loading} variant="outline">
-            {loading ? 'Refreshing...' : '🔄 Refresh'}
-          </Button>
-          <Button asChild variant="success">
-            <Link href="/roles/add">Add New Role</Link>
-          </Button>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Roles</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            What each kind of staff member can reach.
+          </p>
         </div>
+        <Button asChild variant="success">
+          <Link href="/roles/add">New role</Link>
+        </Button>
       </div>
+
+      {error && (
+        <div role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <Card className="py-0">
         <Table>
           <TableHeader>
-            <TableRow className="bg-muted/50">
-              <TableHead>Name</TableHead>
-              <TableHead>Permissions</TableHead>
-              <TableHead>Created At</TableHead>
-              <TableHead>Actions</TableHead>
+            <TableRow>
+              <TableHead>Role</TableHead>
+              <TableHead>Access</TableHead>
+              <TableHead className="text-center">Clinical</TableHead>
+              <TableHead className="text-center">Financial</TableHead>
+              <TableHead className="text-center">Staff</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {roles.length > 0 ? (
-              roles.map((role: any) => (
-                <TableRow key={role.id}>
-                  <TableCell className="font-medium">{role.name}</TableCell>
-                  <TableCell>
-                    {role.permissions && typeof role.permissions === 'string' 
-                      ? JSON.parse(role.permissions).join(', ') 
-                      : Array.isArray(role.permissions) 
-                        ? role.permissions.join(', ') 
-                        : 'None'}
-                  </TableCell>
-                  <TableCell>{new Date(role.createdAt).toLocaleString()}</TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button asChild size="sm" variant="success">
-                        <Link href={`/roles/edit/${role.id}`}>Edit</Link>
-                      </Button>
-                      <Button onClick={() => handleDelete(role.id)} size="sm" variant="destructive">
-                        Delete
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            ) : (
+            {loading && (
               <TableRow>
-                <TableCell colSpan={4} className="text-center text-muted-foreground">
-                  No roles found
+                <TableCell colSpan={6} className="text-muted-foreground">
+                  Loading…
                 </TableCell>
               </TableRow>
             )}
+
+            {!loading && roles.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} className="text-muted-foreground">
+                  No roles defined.
+                </TableCell>
+              </TableRow>
+            )}
+
+            {!loading &&
+              roles.map((role) => {
+                const clinical = role.permissions.some((p) =>
+                  (CLINICAL_PERMISSIONS as readonly string[]).includes(p)
+                );
+                const financial = role.permissions.some((p) =>
+                  (FINANCIAL_PERMISSIONS as readonly string[]).includes(p)
+                );
+
+                return (
+                  <TableRow key={role.id}>
+                    <TableCell>
+                      <Link href={`/roles/edit/${role.id}`} className="font-medium hover:underline">
+                        {role.name}
+                      </Link>
+                      <div className="text-xs text-muted-foreground">
+                        {role.permissions.length} of {ALL_PERMISSIONS.length} permissions
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {groupsFor(role.permissions).join(' · ') || 'No access'}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      {clinical ? <Badge variant="secondary">Yes</Badge> : <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      {financial ? <Badge variant="secondary">Yes</Badge> : <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className="text-center text-sm">{role.staffCount}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button asChild size="sm" variant="secondary">
+                          <Link href={`/roles/edit/${role.id}`}>Edit</Link>
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => remove(role)}
+                          disabled={role.staffCount > 0}
+                          title={
+                            role.staffCount > 0
+                              ? 'Reassign the staff using this role first'
+                              : undefined
+                          }
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
           </TableBody>
         </Table>
       </Card>
+
+      <p className="mt-3 text-xs text-muted-foreground">
+        Clinical and financial access are deliberately separate, so a dentist can
+        hold clinical reporting without seeing the clinic&rsquo;s takings.
+      </p>
     </div>
   );
 }
