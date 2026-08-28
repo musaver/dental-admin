@@ -1,103 +1,108 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
+import { api, ApiError } from '@/lib/api-client';
+import { humanize } from '@/lib/enums';
 
-export default function AdminsList() {
-  const [admins, setAdmins] = useState([]);
+interface StaffRow {
+  admin: {
+    id: string;
+    name: string | null;
+    email: string;
+    staffType: string | null;
+    branchId: string | null;
+    isActive: boolean | null;
+  };
+  role: { id: string; name: string } | null;
+}
+
+/**
+ * Staff list. No delete button — deactivation is the only way access ends
+ * (the API returns 405 for delete), so an inactive account shows dimmed with a
+ * reactivate path through its edit page instead.
+ */
+export default function StaffPage() {
+  const [rows, setRows] = useState<StaffRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const fetchAdmins = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
-      const res = await fetch('/api/admins');
-      const data = await res.json();
-      setAdmins(data);
+      setRows(await api.get<StaffRow[]>('/api/admins'));
     } catch (err) {
-      console.error(err);
+      setError(err instanceof ApiError ? err.message : 'Could not load staff.');
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchAdmins();
   }, []);
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this admin user?')) {
-      try {
-        await fetch(`/api/admins/${id}`, { method: 'DELETE' });
-        setAdmins(admins.filter((admin: any) => admin.admin.id !== id));
-      } catch (error) {
-        console.error('Error deleting admin user:', error);
-      }
-    }
-  };
-
-  if (loading) return <div className="p-4 text-muted-foreground">Loading...</div>;
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div className="p-4">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Admin Users</h1>
-        <div className="flex gap-2">
-          <Button onClick={fetchAdmins} disabled={loading} variant="outline">
-            {loading ? 'Refreshing...' : '🔄 Refresh'}
-          </Button>
-          <Button asChild variant="success">
-            <Link href="/admins/add">Add New Admin</Link>
-          </Button>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Staff</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Accounts and their roles.</p>
         </div>
+        <Button asChild variant="success">
+          <Link href="/admins/add">New staff member</Link>
+        </Button>
       </div>
+
+      {error && (
+        <div role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
+      )}
 
       <Card className="py-0">
         <Table>
           <TableHeader>
-            <TableRow className="bg-muted/50">
+            <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
-              <TableHead>Created At</TableHead>
-              <TableHead>Actions</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Branch</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {admins.length > 0 ? (
-              admins.map((admin: any) => (
-                <TableRow key={admin.admin.id}>
-                  <TableCell className="font-medium">{admin.admin.name}</TableCell>
-                  <TableCell>{admin.admin.email}</TableCell>
-                  <TableCell>{admin.role?.name || 'Unknown'}</TableCell>
-                  <TableCell>{new Date(admin.admin.createdAt).toLocaleString()}</TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button asChild size="sm" variant="success">
-                        <Link href={`/admins/edit/${admin.admin.id}`}>Edit</Link>
-                      </Button>
-                      <Button onClick={() => handleDelete(admin.admin.id)} size="sm" variant="destructive">
-                        Delete
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            ) : (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground">
-                  No admin users found
+            {loading && <TableRow><TableCell colSpan={6} className="text-muted-foreground">Loading…</TableCell></TableRow>}
+            {!loading && rows.length === 0 && (
+              <TableRow><TableCell colSpan={6} className="text-muted-foreground">No staff yet.</TableCell></TableRow>
+            )}
+            {!loading && rows.map(({ admin, role }) => (
+              <TableRow key={admin.id} className={admin.isActive === false ? 'opacity-50' : ''}>
+                <TableCell className="font-medium">
+                  {admin.name || '—'}
+                  {admin.isActive === false && (
+                    <Badge variant="secondary" className="ml-2 text-[10px]">Inactive</Badge>
+                  )}
+                </TableCell>
+                <TableCell className="text-sm">{admin.email}</TableCell>
+                <TableCell>{role?.name ?? 'No role'}</TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {admin.staffType ? humanize(admin.staffType) : '—'}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {admin.branchId ? 'Branch' : 'Head office'}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button asChild size="sm" variant="secondary">
+                    <Link href={`/admins/edit/${admin.id}`}>Edit</Link>
+                  </Button>
                 </TableCell>
               </TableRow>
-            )}
+            ))}
           </TableBody>
         </Table>
       </Card>
