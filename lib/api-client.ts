@@ -20,18 +20,26 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly details?: Record<string, string[]>;
+  /**
+   * The full error body. Some responses carry more than a message — a
+   * duplicate-patient 409 returns the candidate records so the form can offer
+   * to open one instead of registering a second chart.
+   */
+  readonly body: Record<string, unknown>;
 
   constructor(
     message: string,
     status: number,
     code?: string,
-    details?: Record<string, string[]>
+    details?: Record<string, string[]>,
+    body: Record<string, unknown> = {}
   ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.details = details;
+    this.body = body;
   }
 }
 
@@ -87,7 +95,8 @@ export async function fetchJson<T = unknown>(
       body.error ?? `Request failed (${res.status})`,
       res.status,
       body.code,
-      body.details
+      body.details,
+      body as Record<string, unknown>
     );
   }
 
