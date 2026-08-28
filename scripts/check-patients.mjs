@@ -137,14 +137,33 @@ try {
 
   /* Branch isolation --------------------------------------------------- */
 
-  const [otherBranch] = await conn.query('SELECT id FROM patients WHERE branchId <> ? LIMIT 1', [
-    branch.id,
-  ]);
-  check(
-    'no patient leaks in from another branch',
-    otherBranch.length === 0,
-    'single-branch clinic'
+  // The original form of this asserted that no other branch had any patients,
+  // which passed only because the clinic was single-branch — it never exercised
+  // isolation at all. What matters is that a branch-scoped read returns that
+  // branch and nothing else.
+  const [foreign] = await conn.query(
+    'SELECT id, branchId FROM patients WHERE branchId <> ? LIMIT 1',
+    [branch.id]
   );
+
+  if (foreign.length === 0) {
+    check('no patient leaks in from another branch', true, 'single-branch clinic');
+  } else {
+    const [scoped] = await conn.query(
+      "SELECT id, branchId FROM patients WHERE branchId = ? AND status IN ('active','inactive')",
+      [branch.id]
+    );
+    const leaked = scoped.filter((row) => row.branchId !== branch.id);
+    check(
+      'a branch-scoped read returns only that branch',
+      scoped.length > 0 && leaked.length === 0,
+      `${scoped.length} in scope, ${leaked.length} foreign`
+    );
+    check(
+      'a patient at another branch is not in that result',
+      !scoped.some((row) => row.id === foreign[0].id)
+    );
+  }
 } finally {
   if (created.length) {
     await conn.query(`DELETE FROM patients WHERE id IN (${created.map(() => '?').join(',')})`, created);

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -e 's/^build\\(world, rows\\);/delete world.payments; world.patients = world.patients.slice\\(0, 6\\); world.staff = world.staff.slice\\(0, 1\\); world.appointments = world.appointments.slice\\(0, 3\\); world.recalls = []; world.plans = []; world.invoices = []; world.visits = [];\\\\nbuild\\(world, rows\\);/' smoke.mjs)",
+      "Bash(~/.nvm/versions/node/v24.20.0/bin/node degenerate.mjs)"
+    ]
+  }
+}

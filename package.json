@@ -30,7 +30,9 @@
     "check:export": "node scripts/check-export.mjs",
     "check:portal": "node scripts/check-portal.mjs",
     "check:pages": "node scripts/check-pages.mjs",
-    "check:workflow": "node scripts/check-workflow.mjs"
+    "check:workflow": "node scripts/check-workflow.mjs",
+    "seed": "node scripts/seed.mjs",
+    "check:demo": "node scripts/check-demo.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.9.1",

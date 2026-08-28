@@ -1,3 +1,24 @@
+import {
+  BriefcaseMedicalIcon,
+  CalendarDaysIcon,
+  ChartNoAxesColumnIcon,
+  ClipboardListIcon,
+  ConciergeBellIcon,
+  CreditCardIcon,
+  LayoutDashboardIcon,
+  ListChecksIcon,
+  type LucideIcon,
+  MessageSquareIcon,
+  ReceiptTextIcon,
+  RefreshCwIcon,
+  ScrollTextIcon,
+  SettingsIcon,
+  ShieldCheckIcon,
+  StethoscopeIcon,
+  TagsIcon,
+  TrendingUpIcon,
+  UsersIcon,
+} from 'lucide-react';
 import { PERMISSIONS, type Permission } from '@/lib/permissions';
 
 /**
@@ -16,7 +37,8 @@ import { PERMISSIONS, type Permission } from '@/lib/permissions';
 export interface NavItem {
   label: string;
   href: string;
-  icon: string;
+  /** A lucide-react component, the same icon set the shadcn primitives use. */
+  icon: LucideIcon;
   /** null means every signed-in staff member sees it. */
   permission: Permission | null;
   /** Highlight for /patients/123 as well as /patients. */
@@ -34,18 +56,18 @@ export const NAVIGATION: NavSection[] = [
     key: 'today',
     label: null,
     items: [
-      { label: 'Dashboard', href: '/', icon: '📊', permission: null },
+      { label: 'Dashboard', href: '/', icon: LayoutDashboardIcon, permission: null },
       {
         label: 'Diary',
         href: '/schedule',
-        icon: '📅',
+        icon: CalendarDaysIcon,
         permission: PERMISSIONS.APPOINTMENTS_VIEW,
         matchPrefix: true,
       },
       {
         label: 'Front desk',
         href: '/queue',
-        icon: '🔔',
+        icon: ConciergeBellIcon,
         permission: PERMISSIONS.APPOINTMENTS_VIEW,
       },
     ],
@@ -57,21 +79,21 @@ export const NAVIGATION: NavSection[] = [
       {
         label: 'Patients',
         href: '/patients',
-        icon: '🦷',
+        icon: UsersIcon,
         permission: PERMISSIONS.PATIENTS_VIEW,
         matchPrefix: true,
       },
       {
         label: 'Treatment plans',
         href: '/treatment-plans',
-        icon: '📋',
+        icon: ClipboardListIcon,
         permission: PERMISSIONS.TREATMENT_PLANS_VIEW,
         matchPrefix: true,
       },
       {
         label: 'Recalls',
         href: '/recalls',
-        icon: '🔄',
+        icon: RefreshCwIcon,
         permission: PERMISSIONS.RECALLS_MANAGE,
       },
     ],
@@ -83,14 +105,14 @@ export const NAVIGATION: NavSection[] = [
       {
         label: 'Invoices',
         href: '/billing',
-        icon: '💰',
+        icon: ReceiptTextIcon,
         permission: PERMISSIONS.BILLING_VIEW,
         matchPrefix: true,
       },
       {
         label: 'Payments',
         href: '/payments',
-        icon: '💳',
+        icon: CreditCardIcon,
         permission: PERMISSIONS.PAYMENTS_RECORD,
         matchPrefix: true,
       },
@@ -103,17 +125,17 @@ export const NAVIGATION: NavSection[] = [
       {
         label: 'Leads',
         href: '/leads',
-        icon: '📈',
+        icon: TrendingUpIcon,
         permission: PERMISSIONS.LEADS_VIEW,
         matchPrefix: true,
       },
       {
         label: 'Messages',
         href: '/communications',
-        icon: '✉️',
+        icon: MessageSquareIcon,
         permission: PERMISSIONS.LEADS_VIEW,
       },
-      { label: 'Tasks', href: '/tasks', icon: '✅', permission: null, matchPrefix: true },
+      { label: 'Tasks', href: '/tasks', icon: ListChecksIcon, permission: null, matchPrefix: true },
     ],
   },
   {
@@ -123,13 +145,13 @@ export const NAVIGATION: NavSection[] = [
       {
         label: 'Clinical',
         href: '/reports/clinical',
-        icon: '🩺',
+        icon: StethoscopeIcon,
         permission: PERMISSIONS.REPORTS_CLINICAL,
       },
       {
         label: 'Financial',
         href: '/reports/financial',
-        icon: '📉',
+        icon: ChartNoAxesColumnIcon,
         permission: PERMISSIONS.REPORTS_FINANCIAL,
       },
     ],
@@ -138,23 +160,41 @@ export const NAVIGATION: NavSection[] = [
     key: 'admin',
     label: 'Administration',
     items: [
-      { label: 'Staff', href: '/admins', icon: '👥', permission: PERMISSIONS.STAFF_MANAGE, matchPrefix: true },
-      { label: 'Roles', href: '/roles', icon: '🔐', permission: PERMISSIONS.ROLES_MANAGE, matchPrefix: true },
+      {
+        label: 'Staff',
+        href: '/admins',
+        icon: BriefcaseMedicalIcon,
+        permission: PERMISSIONS.STAFF_MANAGE,
+        matchPrefix: true,
+      },
+      {
+        label: 'Roles',
+        href: '/roles',
+        icon: ShieldCheckIcon,
+        permission: PERMISSIONS.ROLES_MANAGE,
+        matchPrefix: true,
+      },
       {
         label: 'Procedures',
         href: '/procedures',
-        icon: '🧾',
+        icon: TagsIcon,
         permission: PERMISSIONS.PROCEDURES_MANAGE,
         matchPrefix: true,
       },
       {
         label: 'Settings',
         href: '/settings',
-        icon: '⚙️',
+        icon: SettingsIcon,
         permission: PERMISSIONS.SETTINGS_MANAGE,
         matchPrefix: true,
       },
-      { label: 'Audit log', href: '/audit', icon: '🛡️', permission: PERMISSIONS.AUDIT_VIEW, matchPrefix: true },
+      {
+        label: 'Audit log',
+        href: '/audit',
+        icon: ScrollTextIcon,
+        permission: PERMISSIONS.AUDIT_VIEW,
+        matchPrefix: true,
+      },
     ],
   },
 ];
