@@ -13,14 +13,15 @@
     "db:baseline": "node scripts/baseline-migrations.mjs",
     "db:studio": "drizzle-kit studio",
     "check:relations": "jiti scripts/check-relations.mjs",
-    "check": "tsc --noEmit && npm test && npm run check:relations && npm run check:enums && npm run check:rbac && npm run check:invariants",
+    "check": "tsc --noEmit && npm test && npm run check:relations && npm run check:enums && npm run check:rbac && npm run check:patients && npm run check:plans && npm run check:invariants",
     "test": "node --test \"lib/**/*.test.ts\"",
     "test:timezones": "TZ=UTC npm test && TZ=Asia/Karachi npm test",
     "check:enums": "jiti scripts/check-enums.mjs",
     "check:rbac": "jiti scripts/check-rbac.mjs",
     "check:invariants": "node scripts/check-invariants.mjs",
     "repair:orphans": "node scripts/repair-orphans.mjs",
-    "check:patients": "jiti scripts/check-patients.mjs"
+    "check:patients": "jiti scripts/check-patients.mjs",
+    "check:plans": "jiti scripts/check-plans.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.9.1",
