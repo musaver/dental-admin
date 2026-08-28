@@ -1,37 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Dental Clinic Admin
 
-## Getting Started
+A dentist-centric CRM and patient-management system: patients with a 360° view
+(odontogram, visits, treatment plans, files, billing, communications),
+an appointment book with chair/dentist conflict detection, recalls, invoicing
+with a patient ledger, a leads funnel with one-click conversion, role-based
+access for clinic staff, an audit trail, a full data export, and a patient
+portal with OTP sign-in and treatment-plan acceptance.
 
-First, run the development server:
+**Stack:** Next.js 15 (App Router) · Drizzle ORM · MySQL · NextAuth ·
+Vercel Blob · Brevo · Tailwind v4.
+
+## Getting started
 
 ```bash
+npm install
+cp env.example .env        # fill in DB_*, NEXTAUTH_SECRET, BREVO_*
+npm run db:baseline        # once, against a database that already has the tables
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Environment
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Variable | Purpose |
+|---|---|
+| `DB_HOST` `DB_PORT` `DB_USER` `DB_PASS` `DB_NAME` | MySQL connection |
+| `NEXTAUTH_SECRET` `NEXTAUTH_URL` | Sessions and signed portal invites |
+| `BREVO_API_KEY` `BREVO_SENDER_EMAIL` | Transactional email (sender must be Brevo-verified) |
+| `CRON_SECRET` | Authenticates `/api/cron/daily` |
+| `EMAIL_DRY_RUN=1` | Log emails instead of sending (development) |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob uploads |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Commands
 
-## Learn More
+```bash
+npm run dev / build / start
+npm test                   # 209 unit tests (node:test — no framework dependency)
+npm run check              # typecheck + tests + all live-database checks
+npm run db:generate        # emit a migration from schema changes — READ IT before applying
+npm run db:migrate         # apply pending migrations
+npm run check:invariants   # detect denormalisation/pointer drift
+npm run repair:orphans     # dry-run orphan cleanup (--apply to fix)
+```
 
-To learn more about Next.js, take a look at the following resources:
+HTTP-level suites need the dev server running with `EMAIL_DRY_RUN=1`:
+`check:reminders`, `check:export`, `check:portal`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Before you change anything
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Read **[CONVENTIONS.md](CONVENTIONS.md)**. The database has no foreign keys,
+no CHECK constraints and no triggers — every invariant that matters is
+enforced in application code, and that file says where each one lives.
 
-## Deploy on Vercel
+Two of them save you from real trouble:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `lib/schema.ts` is hand-maintained. **Do not regenerate it** from the
+  database; you would silently lose 80 indexes.
+- `db:push` is called `db:push:DANGER` because against a drifted snapshot it
+  will emit `DROP TABLE` for live tables.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# yladmin
+## Deployment
+
+Built for Vercel. `vercel.json` schedules the daily job (reminders, recall
+emails, telemetry purge) at 04:00 UTC — 09:00 clinic time. Set `CRON_SECRET`
+so Vercel authenticates it, and use the Pro plan if exports and reminder
+batches need more than 60 seconds.
