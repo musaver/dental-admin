@@ -1,7 +1,7 @@
 import type { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import { db } from '@/lib/db';
-import { adminRoles, adminUsers, loginAttempts } from '@/lib/schema';
+import { adminRoles, adminUsers, loginAttempts, user } from '@/lib/schema';
 import { parsePermissions } from '@/lib/permissions';
 import { clinicNow } from '@/lib/datetime';
 import bcrypt from 'bcrypt';
@@ -178,6 +178,90 @@ export const authOptions: NextAuthOptions = {
           branchId: row.branchId,
           staffType: row.staffType,
           permissions: parsePermissions(row.permissions),
+        };
+      },
+    }),
+
+    /**
+     * Patient portal sign-in: a one-time code emailed to the address on file.
+     *
+     * A SECOND PROVIDER in the SAME NextAuth instance, not a second instance —
+     * NextAuth v4 derives its base path from NEXTAUTH_URL, so two instances in
+     * one app fight over it. The token's `kind` claim is what separates the
+     * audiences everywhere else.
+     *
+     * The OTP lives in user.otp / user.otp_expiry, which exist for exactly
+     * this. Rolling our own keeps NextAuth's Email provider — and therefore
+     * the verification_tokens table with its incompatible 3-column primary
+     * key — entirely out of the picture.
+     *
+     * Codes are requested through POST /api/portal/otp/request; this provider
+     * only verifies them.
+     */
+    CredentialsProvider({
+      id: 'patient-otp',
+      name: 'Patient',
+      credentials: {
+        email: { label: 'Email', type: 'email' },
+        otp: { label: 'One-time code', type: 'text' },
+      },
+
+      async authorize(credentials, req) {
+        const email = credentials?.email?.trim().toLowerCase();
+        const otp = credentials?.otp?.trim();
+        const ip = clientIp(req);
+
+        if (!email || !otp || !/^\d{6}$/.test(otp)) {
+          throw new Error(AUTH_ERROR.INVALID_CREDENTIALS);
+        }
+
+        // The same sliding window as staff logins, so the six-digit space
+        // cannot be brute-forced.
+        if (await isLockedOut(email, ip)) {
+          await recordAttempt(email, ip, false);
+          throw new Error(AUTH_ERROR.ACCOUNT_LOCKED);
+        }
+
+        const [portalUser] = await db
+          .select({
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            otp: user.otp,
+            otpExpiry: user.otpExpiry,
+          })
+          .from(user)
+          .where(eq(user.email, email))
+          .limit(1);
+
+        const expired =
+          !portalUser?.otpExpiry || portalUser.otpExpiry.getTime() < clinicNow().getTime();
+
+        // One comparison covering missing user, missing code and wrong code,
+        // so timing and messages reveal nothing about which it was.
+        if (!portalUser?.otp || expired || portalUser.otp !== otp) {
+          await recordAttempt(email, ip, false);
+          throw new Error(AUTH_ERROR.INVALID_CREDENTIALS);
+        }
+
+        // Single use: clear it the moment it succeeds.
+        await db
+          .update(user)
+          .set({ otp: null, otpExpiry: null, updatedAt: clinicNow() })
+          .where(eq(user.id, portalUser.id));
+
+        await recordAttempt(email, ip, true);
+
+        return {
+          id: portalUser.id,
+          email: portalUser.email,
+          name: portalUser.name,
+          kind: 'patient' as const,
+          roleId: null,
+          roleName: null,
+          branchId: null,
+          staffType: null,
+          permissions: [],
         };
       },
     }),
