@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -44,6 +44,11 @@ interface DuplicateCandidate {
   reason: 'phone' | 'name-and-dob';
 }
 
+interface Branch {
+  id: string;
+  name: string;
+}
+
 const EMPTY: PatientFormValues = {
   firstName: '', lastName: '', phone: '', altPhone: '', email: '',
   gender: '', dateOfBirth: '', cnic: '', address: '', city: '',
@@ -70,6 +75,27 @@ export default function PatientForm({
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[] | null>(null);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [branchId, setBranchId] = useState('');
+
+  /*
+   * An MRN is issued per branch, so registration has to name one. A
+   * branch-scoped user has exactly one and it is implicit; head office gets
+   * every branch back and must choose, which is why this form used to 400 for
+   * the owner account with nothing on screen to fix.
+   */
+  useEffect(() => {
+    if (mode !== 'create') return;
+    api
+      .get<Branch[]>('/api/branches')
+      .then((rows) => {
+        setBranches(rows);
+        if (rows.length === 1) setBranchId(rows[0]!.id);
+      })
+      .catch(() => setBranches([]));
+  }, [mode]);
+
+  const branchChoiceNeeded = mode === 'create' && branches.length > 1;
 
   const set = (key: keyof PatientFormValues) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
@@ -81,6 +107,8 @@ export default function PatientForm({
       Object.entries(values).map(([k, v]) => [k, v === '' ? null : v])
     ),
     defaultDiscountPercent: Number(values.defaultDiscountPercent || 0),
+    // Omitted on edit: branch is identity, not an attribute.
+    ...(mode === 'create' && branchId ? { branchId } : {}),
     ...(allowDuplicate ? { allowDuplicate: true } : {}),
   });
 
@@ -200,6 +228,26 @@ export default function PatientForm({
               ))}
             </select>
           </Field>
+          {branchChoiceNeeded && (
+            <Field
+              label="Registering branch"
+              required
+              error={fieldError('branchId')}
+              hint="The medical record number is issued per branch"
+            >
+              <select
+                className={selectClass}
+                value={branchId}
+                onChange={(e) => setBranchId(e.target.value)}
+                required
+              >
+                <option value="">Choose a branch</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
         </CardContent>
       </Card>
 
