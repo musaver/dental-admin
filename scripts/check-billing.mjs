@@ -12,6 +12,8 @@ import 'dotenv/config';
 import mysql from 'mysql2/promise';
 import { randomUUID } from 'node:crypto';
 import {
+  assertInvoiceTotals,
+  computeExtraDiscountAmount,
   computeInvoiceTotals,
   formatPKR,
   invoiceBalance,
@@ -37,7 +39,7 @@ const check = (label, cond, extra = '') => {
   if (!cond) failed++;
 };
 
-const made = { patients: [], invoices: [], items: [], payments: [] };
+const made = { patients: [], invoices: [], items: [], payments: [], codes: [] };
 
 /** Mirrors recomputeInvoice in lib/derive.ts. */
 async function recompute(invoiceId) {
@@ -123,6 +125,93 @@ try {
        VALUES (?,?,?,?,?,?,?,?,NOW())`,
       [id, invoiceId, 'Line', line.quantity, line.unitPrice, line.discountAmount, line.amount, line.itemType]
     );
+  }
+
+  /* Stacked discounts must compound, never go negative ----------------- */
+
+  {
+    // A plan line discount, the patient's standing rate, and a code on top.
+    const stacked = [
+      { quantity: 1, unitPrice: 20000, discountAmount: 5000, itemType: 'procedure', amount: 15000 },
+    ];
+    const patientCut = Math.round(20000 * 0.1);
+    stacked.push({
+      quantity: 1, unitPrice: -patientCut, discountAmount: 0,
+      itemType: 'discount', amount: -patientCut,
+    });
+
+    // The extra discount's base is the REMAINDER, not the gross subtotal.
+    const extra = computeExtraDiscountAmount(stacked, { discountType: 'percentage', value: 20 });
+    check(
+      'an extra discount compounds on the net, not the gross',
+      extra === Math.round((20000 - 5000 - patientCut) * 0.2),
+      `${formatPKR(extra)} of ${formatPKR(20000 - 5000 - patientCut)}`
+    );
+    stacked.push({
+      quantity: 1, unitPrice: -extra, discountAmount: 0,
+      itemType: 'discount', amount: -extra,
+    });
+
+    const stackedTotals = computeInvoiceTotals(stacked);
+    check(
+      'three stacked discounts still reconcile',
+      stackedTotals.totalAmount === stacked.reduce((sum, l) => sum + l.amount, 0)
+    );
+    check('three stacked discounts never go negative', stackedTotals.totalAmount >= 0,
+      formatPKR(stackedTotals.totalAmount));
+
+    // The reconciliation check alone would pass this; the sign check is what
+    // catches it, and nothing else in the suite would.
+    const overDiscounted = [
+      { quantity: 1, unitPrice: 20000, discountAmount: 0, itemType: 'procedure', amount: 20000 },
+      { quantity: 1, unitPrice: -23000, discountAmount: 0, itemType: 'discount', amount: -23000 },
+    ];
+    const badTotals = computeInvoiceTotals(overDiscounted);
+    let refused = false;
+    try {
+      assertInvoiceTotals(overDiscounted, badTotals);
+    } catch {
+      refused = true;
+    }
+    check('an over-discounted invoice is refused before it is written', refused,
+      `would have been ${formatPKR(badTotals.totalAmount)}`);
+  }
+
+  /* A usage limit must hold against concurrent redemption -------------- */
+
+  {
+    const codeId = randomUUID();
+    made.codes.push(codeId);
+    await conn.query(
+      `INSERT INTO discount_codes (id, code, discountType, discountValue, maxRedemptions,
+                                   usedCount, isActive, createdBy, createdAt, updatedAt)
+       VALUES (?,?,'percentage',10,1,0,1,?,NOW(),NOW())`,
+      [codeId, `CHECK-${codeId.slice(0, 8).toUpperCase()}`, staff.id]
+    );
+
+    // This is the statement redeemDiscountCode() issues. Running it twice is
+    // the single-connection stand-in for two racing transactions: the guard is
+    // inside the statement that takes the row lock, so the second finds no
+    // matching row rather than reading a stale usedCount.
+    const claim = async () => {
+      const [res] = await conn.query(
+        `UPDATE discount_codes SET usedCount = usedCount + 1
+          WHERE id = ? AND isActive = 1
+            AND (maxRedemptions IS NULL OR usedCount < maxRedemptions)`,
+        [codeId]
+      );
+      return res.affectedRows;
+    };
+
+    check('the first redemption of a limited code succeeds', (await claim()) === 1);
+    check('the second is refused rather than overshooting the limit', (await claim()) === 0);
+
+    const [[after]] = await conn.query(
+      'SELECT usedCount, maxRedemptions FROM discount_codes WHERE id = ?',
+      [codeId]
+    );
+    check('usedCount never exceeds maxRedemptions',
+      after.usedCount === after.maxRedemptions, `${after.usedCount}/${after.maxRedemptions}`);
   }
 
   /* The unique index is the real guard against a numbering race -------- */
@@ -226,6 +315,9 @@ try {
     ['invoice_items', made.items],
     ['invoices', made.invoices],
     ['patients', made.patients],
+    // After the invoices that reference them, or the dangling-reference check
+    // in check:invariants would trip on the leftovers.
+    ['discount_codes', made.codes],
   ];
   for (const [table, ids] of order) {
     if (!ids.length) continue;

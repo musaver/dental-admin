@@ -1,6 +1,7 @@
 import { db } from '@/lib/db';
 import {
   appointments,
+  discountCodes,
   invoiceItems,
   invoices,
   patientConditions,
@@ -10,6 +11,7 @@ import {
   treatmentPlans,
 } from '@/lib/schema';
 import {
+  assertInvoiceTotals,
   computeInvoiceTotals,
   computeItemNet,
   computePlanTotals,
@@ -20,7 +22,7 @@ import { PAYMENT_TYPE, TREATMENT_PLAN_ITEM_STATUS } from '@/lib/enums';
 import { and, eq, sql } from 'drizzle-orm';
 
 /**
- * Keepers for the seven denormalised fields.
+ * Keepers for the eight denormalised fields.
  *
  * The database enforces none of them — no triggers, no generated columns, no
  * foreign keys. Each one is a cached rollup that drifts the moment a single
@@ -34,9 +36,16 @@ import { and, eq, sql } from 'drizzle-orm';
  *   treatment_plans.discountTotal    ← items
  *   treatment_plans.netAmount        ← items
  *   treatment_plan_items.netAmount   ← its own price and discount
+ *   discount_codes.usedCount         ← invoices redeeming it
  *
  * RULE: never UPDATE one of those columns directly. Call the function here,
  * from inside the same transaction as the change that caused it.
+ *
+ * discount_codes.usedCount is the one exception to the forward direction, and
+ * deliberately so: its live writer is the conditional UPDATE in
+ * lib/discount-codes.ts, because only a single guarded statement can enforce a
+ * usage limit against concurrent redemption. recomputeDiscountCodeUsage() below
+ * is the REPAIR path, not the write path.
  *
  * Every function takes an optional `tx` so it can join a surrounding
  * transaction — recomputing outside the transaction that inserted the payment
@@ -151,15 +160,18 @@ export async function recomputeInvoiceTotals(
     .from(invoiceItems)
     .where(eq(invoiceItems.invoiceId, invoiceId));
 
-  const totals = computeInvoiceTotals(
-    lines.map((l) => ({
-      quantity: l.quantity ?? 1,
-      unitPrice: l.unitPrice,
-      discountAmount: l.discountAmount ?? 0,
-      itemType: l.itemType,
-      amount: l.amount,
-    }))
-  );
+  const normalised = lines.map((l) => ({
+    quantity: l.quantity ?? 1,
+    unitPrice: l.unitPrice,
+    discountAmount: l.discountAmount ?? 0,
+    itemType: l.itemType,
+    amount: l.amount,
+  }));
+  const totals = computeInvoiceTotals(normalised);
+  // This is the SECOND writer of these three columns, so it has to refuse what
+  // the create path refuses — otherwise a repair could quietly reinstate a
+  // negative total that createInvoice() would never have written.
+  assertInvoiceTotals(normalised, totals);
 
   await tx
     .update(invoices)
@@ -316,4 +328,43 @@ export async function unlinkAppointmentFromPlanItem(
       updatedAt: now,
     })
     .where(eq(treatmentPlanItems.id, planItemId));
+}
+
+/* ── discount_codes.usedCount ────────────────────────────────────────── */
+
+/**
+ * Re-derive a code's usedCount from the invoices that redeemed it.
+ *
+ * This is the REPAIR path, not the write path. The live writer is the
+ * conditional UPDATE in redeemDiscountCode(), because a recompute-from-source
+ * cannot be atomic against concurrent redemption — two transactions would both
+ * count the same N rows and both write N+1.
+ *
+ * Use it when check:invariants reports drift, or after a manual correction.
+ */
+export async function recomputeDiscountCodeUsage(
+  codeId: string,
+  tx: Executor = db
+): Promise<number | null> {
+  const [code] = await tx
+    .select({ id: discountCodes.id })
+    .from(discountCodes)
+    .where(eq(discountCodes.id, codeId))
+    .limit(1);
+
+  if (!code) return null;
+
+  const [counted] = await tx
+    .select({ n: sql<number>`count(*)` })
+    .from(invoices)
+    .where(eq(invoices.discountCodeId, codeId));
+
+  const usedCount = Number(counted?.n ?? 0);
+
+  await tx
+    .update(discountCodes)
+    .set({ usedCount, updatedAt: new Date() })
+    .where(eq(discountCodes.id, codeId));
+
+  return usedCount;
 }
