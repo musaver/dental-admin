@@ -20,9 +20,20 @@ import { patientName } from '@/lib/patient-identity';
 
 interface Resources {
   branchId: string | null;
-  chairs: { id: string; name: string }[];
+  // A chair's branch is what tells the booking dialog where to register a new
+  // patient when head office is looking at every branch at once.
+  chairs: { id: string; name: string; branchId: string | null }[];
   dentists: { id: string; name: string | null; staffType: string | null }[];
   hours: { workStartMinutes: number; workEndMinutes: number; slotMinutes: number };
+}
+
+interface PatientResult {
+  id: string;
+  mrn: string;
+  firstName: string;
+  lastName: string | null;
+  phone: string;
+  hasAlerts: boolean;
 }
 
 interface Appointment {
@@ -52,12 +63,16 @@ function ScheduleView() {
   // button behaves.
   const dateKey = searchParams.get('date') ?? toDateKey(clinicNow());
   const groupBy = (searchParams.get('by') ?? 'chair') as 'chair' | 'dentist';
+  // Set by "Book appointment" on a chart and "Book" on the recall worklist.
+  const bookForPatientId = searchParams.get('patientId');
+  const bookForRecallId = searchParams.get('recallId');
 
   const [resources, setResources] = useState<Resources | null>(null);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [booking, setBooking] = useState<{ columnId: string; startMinutes: number } | null>(null);
+  const [prefilledPatient, setPrefilledPatient] = useState<PatientResult | null>(null);
 
   const day = useMemo(() => fromDateKey(dateKey), [dateKey]);
 
@@ -72,6 +87,17 @@ function ScheduleView() {
     },
     [router, searchParams]
   );
+
+  /**
+   * Drop the deep-link params once the dialog is done with them, so a refresh
+   * or a day change does not reopen the booking form on the same patient.
+   */
+  const closePrefill = useCallback(() => {
+    setPrefilledPatient(null);
+    if (bookForPatientId || bookForRecallId) {
+      setParams({ patientId: null, recallId: null });
+    }
+  }, [bookForPatientId, bookForRecallId, setParams]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,6 +141,45 @@ function ScheduleView() {
       { id: UNASSIGNED, label: 'Unassigned', sublabel: 'No chair set' },
     ];
   }, [resources, groupBy]);
+
+  /*
+   * Arriving with ?patientId= means someone clicked "Book appointment" on a
+   * chart or "Book" on a recall. Resolve the patient and open the dialog on
+   * them, rather than dropping the caller on an empty diary — which is what
+   * both of those buttons used to do.
+   */
+  useEffect(() => {
+    if (!bookForPatientId || !resources || !columns.length) return;
+    let cancelled = false;
+
+    api
+      .get<{ rows: PatientResult[] }>(`/api/patients${qs({ id: bookForPatientId, pageSize: 1 })}`)
+      .then((r) => {
+        if (cancelled) return;
+        const found = r.rows[0];
+        if (!found) {
+          setError('That patient could not be found.');
+          return;
+        }
+        setPrefilledPatient(found);
+        setBooking(
+          (current) =>
+            current ?? {
+              columnId: columns[0]!.id,
+              startMinutes: resources.hours.workStartMinutes,
+            }
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof ApiError ? err.message : 'Could not load that patient.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bookForPatientId, resources, columns]);
 
   const events: GridEvent[] = useMemo(
     () =>
@@ -238,9 +303,15 @@ function ScheduleView() {
           chairId={groupBy === 'chair' && booking.columnId !== UNASSIGNED ? booking.columnId : null}
           dentistId={groupBy === 'dentist' ? booking.columnId : null}
           resources={resources}
-          onClose={() => setBooking(null)}
+          initialPatient={prefilledPatient}
+          recallId={bookForRecallId}
+          onClose={() => {
+            setBooking(null);
+            closePrefill();
+          }}
           onBooked={() => {
             setBooking(null);
+            closePrefill();
             load();
           }}
         />

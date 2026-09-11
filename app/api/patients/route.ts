@@ -1,24 +1,15 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { branches, patients } from '@/lib/schema';
-import { withAuth, resolveBranchScope, AuthError, AUTH_FAILURE } from '@/lib/rbac';
+import { patients } from '@/lib/schema';
+import { withAuth, resolveBranchScope, resolveWritingBranch } from '@/lib/rbac';
 import { PERMISSIONS } from '@/lib/permissions';
-import { writeAuditLog } from '@/lib/audit';
-import { AUDIT_ACTION, AUDIT_ENTITY, PATIENT_STATUS } from '@/lib/enums';
-import {
-  findDuplicatePatients,
-  isDuplicateKeyError,
-  nextMrn,
-  normalizePhone,
-} from '@/lib/patients';
+import { PATIENT_STATUS } from '@/lib/enums';
+import { findDuplicatePatients, isDuplicateKeyError, normalizePhone } from '@/lib/patients';
+import { branchExists, insertPatient, MRN_RETRIES } from '@/lib/patient-registration';
 import { patientCreateSchema, validationError } from '@/lib/validation/patient';
 import { parsePageParams, parseSearch, paginate } from '@/lib/pagination';
 import { clinicNow } from '@/lib/datetime';
 import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
-import { v4 as uuidv4 } from 'uuid';
-
-/** MRN generation races on a shared read; the unique index catches it. */
-const MRN_RETRIES = 5;
 
 export const GET = withAuth(PERMISSIONS.PATIENTS_VIEW, async (req, ctx) => {
   const url = new URL(req.url);
@@ -26,15 +17,22 @@ export const GET = withAuth(PERMISSIONS.PATIENTS_VIEW, async (req, ctx) => {
   const page = parsePageParams(url);
   const search = parseSearch(url);
   const status = url.searchParams.get('status');
+  const id = url.searchParams.get('id');
 
   const filters = [];
 
   if (branchIds) filters.push(inArray(patients.branchId, branchIds));
 
-  // Default to hiding archived records; the list is a working view.
+  // Resolve one patient into the picker projection. GET /api/patients/[id]
+  // would also do it, but that route records a chart view — which is the right
+  // thing for opening a record and wrong for filling in a dropdown.
+  if (id) filters.push(eq(patients.id, id));
+
+  // Default to hiding archived records; the list is a working view. An explicit
+  // id is not a working view, so it resolves whatever status the patient is in.
   if (status && status !== 'all') {
     filters.push(eq(patients.status, status));
-  } else if (!status) {
+  } else if (!status && !id) {
     filters.push(inArray(patients.status, [PATIENT_STATUS.ACTIVE, PATIENT_STATUS.INACTIVE]));
   }
 
@@ -92,23 +90,15 @@ export const POST = withAuth(PERMISSIONS.PATIENTS_CREATE, async (req, ctx) => {
   const input = parsed.data;
 
   // Head office must say which branch; scoped staff always use their own.
-  const branchId = ctx.isHeadOffice ? input.branchId : ctx.branchId;
+  const branchId = resolveWritingBranch(ctx, input.branchId);
   if (!branchId) {
     return NextResponse.json(
       { error: 'Choose which branch is registering this patient.', details: { branchId: ['Required'] } },
       { status: 400 }
     );
   }
-  if (!ctx.isHeadOffice && input.branchId && input.branchId !== ctx.branchId) {
-    throw new AuthError(AUTH_FAILURE.FORBIDDEN, 403, 'You cannot register into another branch.');
-  }
 
-  const [branch] = await db
-    .select({ id: branches.id })
-    .from(branches)
-    .where(eq(branches.id, branchId))
-    .limit(1);
-  if (!branch) {
+  if (!(await branchExists(branchId))) {
     return NextResponse.json({ error: 'That branch does not exist.' }, { status: 400 });
   }
 
@@ -143,59 +133,9 @@ export const POST = withAuth(PERMISSIONS.PATIENTS_CREATE, async (req, ctx) => {
 
   for (let attempt = 1; attempt <= MRN_RETRIES; attempt++) {
     try {
-      const created = await db.transaction(async (tx) => {
-        const mrn = await nextMrn(tx, branchId);
-        const row = {
-          id: uuidv4(),
-          mrn,
-          branchId,
-          firstName: input.firstName,
-          lastName: input.lastName ?? null,
-          gender: input.gender ?? null,
-          dateOfBirth: input.dateOfBirth ?? null,
-          cnic: input.cnic ?? null,
-          phone,
-          altPhone: normalizePhone(input.altPhone),
-          email: input.email ?? null,
-          address: input.address ?? null,
-          city: input.city ?? null,
-          emergencyContactName: input.emergencyContactName ?? null,
-          emergencyContactPhone: normalizePhone(input.emergencyContactPhone),
-          emergencyContactRelation: input.emergencyContactRelation ?? null,
-          guardianName: input.guardianName ?? null,
-          bloodGroup: input.bloodGroup ?? null,
-          occupation: input.occupation ?? null,
-          referredBy: input.referredBy ?? null,
-          leadId: input.leadId ?? null,
-          defaultDiscountPercent: input.defaultDiscountPercent ?? 0,
-          medicalNotes: input.medicalNotes ?? null,
-          dentalNotes: input.dentalNotes ?? null,
-          hasAlerts: false,
-          portalUserId: null,
-          status: PATIENT_STATUS.ACTIVE,
-          registeredBy: ctx.userId,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        await tx.insert(patients).values(row);
-
-        await writeAuditLog(
-          {
-            actor: ctx,
-            action: AUDIT_ACTION.CREATE,
-            entityType: AUDIT_ENTITY.PATIENT,
-            entityId: row.id,
-            patientId: row.id,
-            branchId,
-            after: row,
-            request: req,
-          },
-          tx
-        );
-
-        return row;
-      });
+      const created = await db.transaction((tx) =>
+        insertPatient(tx, { input, branchId, actor: ctx, now, request: req })
+      );
 
       return NextResponse.json(created, { status: 201 });
     } catch (error) {
