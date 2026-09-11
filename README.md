@@ -43,7 +43,7 @@ npm run repair:orphans     # dry-run orphan cleanup (--apply to fix)
 ```
 
 HTTP-level suites need the dev server running with `EMAIL_DRY_RUN=1`:
-`check:reminders`, `check:export`, `check:portal`.
+`check:reminders`, `check:export`, `check:portal`, `check:booking`.
 
 ## Before you change anything
 

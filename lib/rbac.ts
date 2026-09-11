@@ -9,13 +9,20 @@ import {
   AUTH_FAILURE,
   canAccessBranch,
   resolveBranchScope,
+  resolveWritingBranch,
   type BranchScope,
 } from '@/lib/branch-scope';
 import { eq } from 'drizzle-orm';
 
 // Branch rules live in lib/branch-scope.ts so they stay free of next-auth and
 // remain unit-testable; re-exported here so routes have one import.
-export { AuthError, AUTH_FAILURE, canAccessBranch, resolveBranchScope };
+export {
+  AuthError,
+  AUTH_FAILURE,
+  canAccessBranch,
+  resolveBranchScope,
+  resolveWritingBranch,
+};
 export type { BranchScope, AuthFailure } from '@/lib/branch-scope';
 
 /**
