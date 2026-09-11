@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
   adminUsers,
-  appointments,
+  invoiceItems,
+  invoices,
   patients,
   prescriptionItems,
   prescriptions,
@@ -11,8 +12,12 @@ import {
   visitProcedures,
   visits,
 } from '@/lib/schema';
+import {
+  advanceAppointment,
+  type AppointmentAdvanceResult,
+} from '@/lib/appointment-lifecycle';
 import { withAuth } from '@/lib/rbac';
-import { PERMISSIONS } from '@/lib/permissions';
+import { PERMISSIONS, hasPermission } from '@/lib/permissions';
 import { loadVisit } from '@/lib/loaders';
 import { writeAuditLog } from '@/lib/audit';
 import {
@@ -24,7 +29,7 @@ import {
 } from '@/lib/enums';
 import { generateRecallsForVisit } from '@/lib/recalls';
 import { clinicNow } from '@/lib/datetime';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { asc, desc, eq, inArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -41,9 +46,18 @@ type Params = { params: Promise<{ id: string }> };
 
 export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params }: Params) => {
   const { id } = await params;
+  // loadVisit has already branch-checked the row, so everything below is in
+  // scope by construction.
   const visit = await loadVisit(ctx, id);
 
-  const [performed, diagnoses, rxHeaders, [patient], [dentist]] = await Promise.all([
+  // The page shapes itself to the caller's permissions, computed here rather
+  // than from the session — same pattern as the patient summary route. Two
+  // flags, not one: billing_view reveals the invoices, billing_create is what
+  // POST /api/invoices actually enforces.
+  const canBilling = hasPermission(ctx.permissions, PERMISSIONS.BILLING_VIEW);
+  const canRaiseInvoice = hasPermission(ctx.permissions, PERMISSIONS.BILLING_CREATE);
+
+  const [performed, diagnoses, rxHeaders, [patient], [dentist], raised] = await Promise.all([
     db
       .select({
         id: visitProcedures.id,
@@ -93,7 +107,66 @@ export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params
       .from(adminUsers)
       .where(eq(adminUsers.id, visit.dentistId))
       .limit(1),
+    // invoices.visitId is the right link, not invoice_items.visitProcedureId:
+    // createInvoice() always stamps it when a visitId was supplied, and the
+    // manual-line path cannot carry a visitProcedureId at all — so no invoice
+    // bills this visit without pointing at it.
+    canBilling
+      ? db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            issueDate: invoices.issueDate,
+            totalAmount: invoices.totalAmount,
+            paidAmount: invoices.paidAmount,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.visitId, id))
+          .orderBy(desc(invoices.issueDate))
+      : Promise.resolve([]),
   ]);
+
+  // Which performed procedures are already on an invoice, so the page can mark
+  // them and hide the "Raise invoice" button once there is nothing left.
+  //
+  // BOTH pointers, because buildLinesFromVisit() skips on both: work billed
+  // through its treatment plan carries a treatmentPlanItemId and no
+  // visitProcedureId. Checking only the latter would leave a dead "Raise
+  // invoice" button on a plan-billed visit — it would 409 and come straight
+  // back. This has to mirror that builder exactly or the page lies.
+  const visitProcedureIds = performed.map((p) => p.id);
+  const planItemIds = performed
+    .map((p) => p.treatmentPlanItemId)
+    .filter((planItemId): planItemId is string => Boolean(planItemId));
+
+  const billedRows =
+    canBilling && visitProcedureIds.length
+      ? await db
+          .select({
+            visitProcedureId: invoiceItems.visitProcedureId,
+            treatmentPlanItemId: invoiceItems.treatmentPlanItemId,
+          })
+          .from(invoiceItems)
+          // Filtered, deliberately unlike buildLinesFromVisit(), which reads
+          // every matching row in the table. That is fine inside a transaction
+          // about to write; it must not become a full scan on every page load.
+          .where(
+            planItemIds.length
+              ? or(
+                  inArray(invoiceItems.visitProcedureId, visitProcedureIds),
+                  inArray(invoiceItems.treatmentPlanItemId, planItemIds)
+                )
+              : inArray(invoiceItems.visitProcedureId, visitProcedureIds)
+          )
+      : [];
+
+  const billedVisitProcedures = new Set(billedRows.map((r) => r.visitProcedureId));
+  const billedPlanItems = new Set(billedRows.map((r) => r.treatmentPlanItemId));
+
+  const isInvoiced = (p: { id: string; treatmentPlanItemId: string | null }) =>
+    billedVisitProcedures.has(p.id) ||
+    Boolean(p.treatmentPlanItemId && billedPlanItems.has(p.treatmentPlanItemId));
 
   const rxIds = rxHeaders.map((r) => r.id);
   const rxLines = rxIds.length
@@ -108,7 +181,11 @@ export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params
     visit,
     patient: patient ?? null,
     dentist: dentist ?? null,
-    procedures: performed,
+    permissions: { billing: canBilling, billingCreate: canRaiseInvoice },
+    invoices: raised,
+    // Gated on canBilling so a clinical-only viewer learns nothing about
+    // money; the button is hidden for them anyway, so the two stay consistent.
+    procedures: performed.map((p) => ({ ...p, invoiced: isInvoiced(p) })),
     diagnoses,
     prescriptions: rxHeaders.map((rx) => ({
       ...rx,
@@ -142,27 +219,34 @@ export const PUT = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx, { params
   const completing =
     input.status === VISIT_STATUS.COMPLETED && before.status !== VISIT_STATUS.COMPLETED;
 
-  await db.transaction(async (tx) => {
+  // Returned out of the transaction so the warnings survive it.
+  const completion = await db.transaction(async (tx): Promise<AppointmentAdvanceResult | null> => {
+    let advanced: AppointmentAdvanceResult | null = null;
+
     await tx.update(visits).set(patch).where(eq(visits.id, id));
 
     if (completing) {
       // Close the appointment out alongside the visit, so the diary and the
-      // clinical record agree about what happened.
+      // clinical record agree about what happened. Via the lifecycle helper,
+      // not a direct write: it walks the legal path (a patient nobody checked
+      // in still gets a truthful checkedInAt), closes any recall the
+      // appointment was booked from, and writes the appointment's audit row.
       if (before.appointmentId) {
-        await tx
-          .update(appointments)
-          .set({
-            status: APPOINTMENT_STATUS.COMPLETED,
-            completedAt: now,
-            updatedAt: now,
-          })
-          .where(eq(appointments.id, before.appointmentId));
+        advanced = await advanceAppointment(tx, {
+          appointmentId: before.appointmentId,
+          to: APPOINTMENT_STATUS.COMPLETED,
+          actor: ctx,
+          now,
+          request: req,
+        });
       }
 
       // Procedures with a defaultRecallMonths generate the patient's next
       // recall. Idempotent and de-duplicated — see lib/recalls.ts.
       await generateRecallsForVisit(tx, id, ctx.userId);
     }
+
+    return advanced;
   });
 
   const after = await loadVisit(ctx, id);
@@ -175,9 +259,11 @@ export const PUT = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx, { params
     patientId: before.patientId,
     branchId: before.branchId,
     before,
-    after,
+    after: { ...after, appointmentOutcome: completion?.outcome ?? null },
     request: req,
   });
 
-  return NextResponse.json(after);
+  // `warnings` mirrors POST /api/appointments — a cancelled appointment is
+  // skipped rather than resurrected, and the desk should hear about it.
+  return NextResponse.json({ ...after, warnings: completion?.warnings ?? [] });
 });
