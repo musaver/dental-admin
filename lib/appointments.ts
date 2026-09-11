@@ -45,6 +45,44 @@ export function canTransition(from: string, to: string): boolean {
   return Array.isArray(allowed) && allowed.includes(to as AppointmentStatus);
 }
 
+/**
+ * The shortest legal route from one status to another, as the hops to apply.
+ *
+ * Derived from APPOINTMENT_TRANSITIONS by breadth-first search rather than
+ * written out as a second table. A hand-written route table is a second source
+ * of truth, and it disagrees with the first the moment someone edits a
+ * transition — which is the whole failure class this module exists to prevent.
+ *
+ * Returns the hops EXCLUDING `from` and INCLUDING `to`; [] when already there,
+ * and null when there is no legal route at all. Because cancelled and
+ * completed are terminal, no returned path can ever pass THROUGH them.
+ *
+ * Entries are visited in declaration order, so the result is deterministic:
+ * scheduled → completed is ['checked_in', 'completed'], not the longer route
+ * that goes via confirmed.
+ */
+export function statusPath(from: string, to: AppointmentStatus): AppointmentStatus[] | null {
+  if (!(from in APPOINTMENT_TRANSITIONS)) return null;
+  if (from === to) return [];
+
+  const queue: AppointmentStatus[][] = [[from as AppointmentStatus]];
+  const seen = new Set<string>([from]);
+
+  while (queue.length) {
+    const route = queue.shift()!;
+    const tail = route[route.length - 1];
+
+    for (const next of APPOINTMENT_TRANSITIONS[tail] ?? []) {
+      if (seen.has(next)) continue;
+      if (next === to) return [...route.slice(1), next];
+      seen.add(next);
+      queue.push([...route, next]);
+    }
+  }
+
+  return null;
+}
+
 export interface AppointmentStatusPatch {
   status: AppointmentStatus;
   confirmedAt?: Date | null;
@@ -132,6 +170,47 @@ export function applyStatusChange(input: StatusChangeInput): AppointmentStatusPa
 
     default:
       break;
+  }
+
+  return patch;
+}
+
+/**
+ * The same patch, but for a status several legal hops away.
+ *
+ * applyStatusChange() is the single-hop primitive and still THROWS on an
+ * illegal transition, which is right when a human is pressing a status button.
+ * This is for callers reacting to a clinical event instead: a dentist
+ * completing a visit must not get an error because the front desk never
+ * pressed "check in". Feed it a path from statusPath() and every hop is legal
+ * by construction, so this never throws.
+ *
+ * Each hop is given the ACCUMULATED timestamps rather than the row's original
+ * ones, so the second hop sees the checkedInAt the first one stamped instead
+ * of stamping a fresh one over it.
+ *
+ * The accumulation tests `in` rather than using ??, because the `scheduled`
+ * case deliberately writes null to clear a timestamp and ?? would swallow
+ * that, silently resurrecting the value the hop meant to erase.
+ */
+export function applyStatusPath(
+  input: Omit<StatusChangeInput, 'to'> & { path: readonly AppointmentStatus[] }
+): AppointmentStatusPatch {
+  const { from, path, ...rest } = input;
+
+  let at = from;
+  let existing = { ...input.existing };
+  let patch: AppointmentStatusPatch = { status: from as AppointmentStatus };
+
+  for (const to of path) {
+    const step = applyStatusChange({ ...rest, from: at, to, existing });
+    patch = { ...patch, ...step };
+
+    existing = {
+      confirmedAt: 'confirmedAt' in step ? step.confirmedAt : existing.confirmedAt,
+      checkedInAt: 'checkedInAt' in step ? step.checkedInAt : existing.checkedInAt,
+    };
+    at = to;
   }
 
   return patch;

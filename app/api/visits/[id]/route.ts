@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
   adminUsers,
-  appointments,
   patients,
   prescriptionItems,
   prescriptions,
@@ -11,6 +10,10 @@ import {
   visitProcedures,
   visits,
 } from '@/lib/schema';
+import {
+  advanceAppointment,
+  type AppointmentAdvanceResult,
+} from '@/lib/appointment-lifecycle';
 import { withAuth } from '@/lib/rbac';
 import { PERMISSIONS } from '@/lib/permissions';
 import { loadVisit } from '@/lib/loaders';
@@ -142,27 +145,34 @@ export const PUT = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx, { params
   const completing =
     input.status === VISIT_STATUS.COMPLETED && before.status !== VISIT_STATUS.COMPLETED;
 
-  await db.transaction(async (tx) => {
+  // Returned out of the transaction so the warnings survive it.
+  const completion = await db.transaction(async (tx): Promise<AppointmentAdvanceResult | null> => {
+    let advanced: AppointmentAdvanceResult | null = null;
+
     await tx.update(visits).set(patch).where(eq(visits.id, id));
 
     if (completing) {
       // Close the appointment out alongside the visit, so the diary and the
-      // clinical record agree about what happened.
+      // clinical record agree about what happened. Via the lifecycle helper,
+      // not a direct write: it walks the legal path (a patient nobody checked
+      // in still gets a truthful checkedInAt), closes any recall the
+      // appointment was booked from, and writes the appointment's audit row.
       if (before.appointmentId) {
-        await tx
-          .update(appointments)
-          .set({
-            status: APPOINTMENT_STATUS.COMPLETED,
-            completedAt: now,
-            updatedAt: now,
-          })
-          .where(eq(appointments.id, before.appointmentId));
+        advanced = await advanceAppointment(tx, {
+          appointmentId: before.appointmentId,
+          to: APPOINTMENT_STATUS.COMPLETED,
+          actor: ctx,
+          now,
+          request: req,
+        });
       }
 
       // Procedures with a defaultRecallMonths generate the patient's next
       // recall. Idempotent and de-duplicated — see lib/recalls.ts.
       await generateRecallsForVisit(tx, id, ctx.userId);
     }
+
+    return advanced;
   });
 
   const after = await loadVisit(ctx, id);
@@ -175,9 +185,11 @@ export const PUT = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx, { params
     patientId: before.patientId,
     branchId: before.branchId,
     before,
-    after,
+    after: { ...after, appointmentOutcome: completion?.outcome ?? null },
     request: req,
   });
 
-  return NextResponse.json(after);
+  // `warnings` mirrors POST /api/appointments — a cancelled appointment is
+  // skipped rather than resurrected, and the desk should hear about it.
+  return NextResponse.json({ ...after, warnings: completion?.warnings ?? [] });
 });
