@@ -21,6 +21,13 @@ import { pool } from '@/lib/db';
  *  - NO-SHOW RATE = no_show / (completed + no_show + cancelled): of the
  *    appointments that reached their day, how many died. Dividing by all
  *    bookings would flatter the number with the still-scheduled future.
+ *  - UNBILLED = a completed visit with at least one non-cancelled
+ *    visit_procedure that no invoice_items row references. NOT "a visit with
+ *    no invoice": bill one of three procedures and that test drops the visit
+ *    off the worklist for ever with two still unbilled, which is exactly the
+ *    revenue leak the worklist exists to catch. This matches
+ *    buildLinesFromVisit() clause for clause, so a row in the worklist always
+ *    produces a non-empty invoice.
  */
 
 export interface ReportRange {
@@ -42,6 +49,21 @@ async function rows<T>(sql: string, params: unknown[]): Promise<T[]> {
   const [result] = await pool.query(sql, params);
   return result as T[];
 }
+
+/**
+ * Units for a performed procedure, in SQL.
+ *
+ * visit_procedures.price is PER UNIT and the table has no quantity column, so
+ * for a per-tooth procedure the tooth count carries it. This is the SQL mirror
+ * of toothCount() in lib/odontogram.ts — kept in one place because three
+ * hand-copied versions drift three separate ways.
+ *
+ * Expects the aliases `vp` (visit_procedures) and `p` (procedures).
+ */
+const PROCEDURE_UNITS_SQL = `GREATEST(1,
+              CASE WHEN p.isPerTooth = 1 AND vp.teeth IS NOT NULL AND vp.teeth <> ''
+                   THEN LENGTH(vp.teeth) - LENGTH(REPLACE(vp.teeth, ',', '')) + 1
+                   ELSE 1 END)`;
 
 /* ── Financial ───────────────────────────────────────────────────────── */
 
@@ -120,10 +142,7 @@ export async function revenueByDentist(range: ReportRange): Promise<RevenueByDen
     `SELECT vp.performedBy AS dentistId,
             au.name AS dentistName,
             COUNT(*) AS procedures,
-            CAST(SUM(vp.price * GREATEST(1,
-              CASE WHEN p.isPerTooth = 1 AND vp.teeth IS NOT NULL AND vp.teeth <> ''
-                   THEN LENGTH(vp.teeth) - LENGTH(REPLACE(vp.teeth, ',', '')) + 1
-                   ELSE 1 END)) AS SIGNED) AS revenue
+            CAST(SUM(vp.price * ${PROCEDURE_UNITS_SQL}) AS SIGNED) AS revenue
        FROM visit_procedures vp
        JOIN visits v ON v.id = vp.visitId
        LEFT JOIN procedures p ON p.id = vp.procedureId
@@ -147,10 +166,7 @@ export async function revenueByCategory(range: ReportRange): Promise<RevenueByCa
   return rows<RevenueByCategory>(
     `SELECT p.category,
             COUNT(*) AS procedures,
-            CAST(SUM(vp.price * GREATEST(1,
-              CASE WHEN p.isPerTooth = 1 AND vp.teeth IS NOT NULL AND vp.teeth <> ''
-                   THEN LENGTH(vp.teeth) - LENGTH(REPLACE(vp.teeth, ',', '')) + 1
-                   ELSE 1 END)) AS SIGNED) AS revenue
+            CAST(SUM(vp.price * ${PROCEDURE_UNITS_SQL}) AS SIGNED) AS revenue
        FROM visit_procedures vp
        JOIN visits v ON v.id = vp.visitId
        LEFT JOIN procedures p ON p.id = vp.procedureId
@@ -317,4 +333,104 @@ export async function recallCompliance(branchIds: string[] | null): Promise<Reca
     completed: Number(row?.completed ?? 0),
     overdue: Number(row?.overdue ?? 0),
   };
+}
+
+/* ── Unbilled work ───────────────────────────────────────────────────── */
+
+export interface UnbilledVisitsQuery {
+  /** null = every branch (head office). */
+  branchIds: string[] | null;
+  limit: number;
+  offset: number;
+}
+
+export interface UnbilledVisit {
+  id: string;
+  visitDate: string;
+  patientId: string;
+  mrn: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  dentistName: string | null;
+  procedures: number;
+  estimatedAmount: number;
+}
+
+/**
+ * The predicate, shared by the list and its count.
+ *
+ * The NOT EXISTS sits on the JOINED visit_procedures row rather than on the
+ * visit, so one clause does both jobs: it selects the visits AND scopes the
+ * SUM to only the work the resulting invoice will actually contain.
+ *
+ * The second NOT EXISTS mirrors the plan-item guard in buildLinesFromVisit():
+ * work already billed through its treatment plan is not billable again here,
+ * and a worklist that disagreed with the builder would offer invoices the
+ * server refuses.
+ *
+ * No "has any procedures" guard is needed — a visit with no procedures has no
+ * unbilled procedure, so it falls out for free.
+ *
+ * Branch scoping is on visits.branchId. visit_procedures and invoice_items are
+ * two of the branchless tables and are reached only through the filtered `v`,
+ * which is the SQL equivalent of the loader rule in lib/loaders.ts.
+ */
+const UNBILLED_VISITS_JOINS = `
+       FROM visits v
+       JOIN visit_procedures vp ON vp.visitId = v.id AND vp.status <> 'cancelled'
+       LEFT JOIN procedures p ON p.id = vp.procedureId`;
+
+const UNBILLED_VISITS_WHERE = `
+      WHERE v.status = 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM invoice_items ii WHERE ii.visitProcedureId = vp.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM invoice_items ii
+           WHERE vp.treatmentPlanItemId IS NOT NULL
+             AND ii.treatmentPlanItemId = vp.treatmentPlanItemId
+        )`;
+
+/** Display-only joins: the list needs these, the count does not. */
+const UNBILLED_VISITS_DISPLAY_JOINS = `
+       LEFT JOIN patients pa ON pa.id = v.patientId
+       LEFT JOIN admin_users au ON au.id = v.dentistId`;
+
+/**
+ * Completed visits with work nobody has billed.
+ *
+ * estimatedAmount is GROSS — before the patient's standing discount, which
+ * createInvoice() appends afterwards as its own line. Label the column "Est."
+ * wherever it is shown: a worklist figure that silently disagrees with the
+ * invoice it produces is worse than no figure at all.
+ *
+ * Oldest first, deliberately unlike the other visit lists: a backlog is worked
+ * from the old end, and the oldest stragglers are the ones at risk of never
+ * being billed at all.
+ */
+export async function unbilledVisits(query: UnbilledVisitsQuery): Promise<UnbilledVisit[]> {
+  const branch = branchClause('v.branchId', query.branchIds);
+  return rows<UnbilledVisit>(
+    `SELECT v.id, v.visitDate, v.patientId,
+            pa.mrn, pa.firstName, pa.lastName,
+            au.name AS dentistName,
+            CAST(COUNT(vp.id) AS SIGNED) AS procedures,
+            CAST(SUM(vp.price * ${PROCEDURE_UNITS_SQL}) AS SIGNED) AS estimatedAmount
+       ${UNBILLED_VISITS_JOINS}${UNBILLED_VISITS_DISPLAY_JOINS}${UNBILLED_VISITS_WHERE}${branch.sql}
+      GROUP BY v.id, v.visitDate, v.patientId, pa.mrn, pa.firstName, pa.lastName, au.name
+      ORDER BY v.visitDate ASC
+      LIMIT ? OFFSET ?`,
+    [...branch.params, query.limit, query.offset]
+  );
+}
+
+/** How many visits the worklist holds, for pagination and the header count. */
+export async function countUnbilledVisits(branchIds: string[] | null): Promise<number> {
+  const branch = branchClause('v.branchId', branchIds);
+  const [row] = await rows<{ n: number }>(
+    `SELECT CAST(COUNT(DISTINCT v.id) AS SIGNED) AS n
+       ${UNBILLED_VISITS_JOINS}${UNBILLED_VISITS_WHERE}${branch.sql}`,
+    branch.params
+  );
+  return Number(row?.n ?? 0);
 }

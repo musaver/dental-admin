@@ -49,7 +49,8 @@ try {
   console.log('Pages render (no redirect to /login):');
   const pages = [
     '/', '/schedule', '/queue', '/patients', '/patients/new', '/treatment-plans',
-    '/recalls', '/billing', '/payments', '/leads', '/communications', '/tasks',
+    '/recalls', '/billing', '/billing?view=unbilled', '/payments', '/leads',
+    '/communications', '/tasks',
     '/reports/clinical', '/reports/financial', '/admins', '/admins/add', '/roles',
     '/roles/add', '/procedures', '/settings', '/settings/templates', '/audit', '/users',
   ];
@@ -70,6 +71,7 @@ try {
     ['/api/procedures', (b) => Array.isArray(b) && b.length === 31],
     ['/api/treatment-plans', (b) => Array.isArray(b.rows)],
     ['/api/invoices', (b) => Array.isArray(b.rows)],
+    ['/api/visits/unbilled', (b) => Array.isArray(b.rows)],
     ['/api/payments', (b) => Array.isArray(b)],
     ['/api/leads', (b) => Array.isArray(b.rows)],
     ['/api/recalls', (b) => Array.isArray(b)],
