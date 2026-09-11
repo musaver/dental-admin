@@ -8,6 +8,7 @@ import {
   branches,
   chairs,
   communicationLogs,
+  discountCodes,
   invoiceItems,
   invoices,
   leadActivities,
@@ -395,8 +396,22 @@ export const invoicesRelations = relations(invoices, ({ one, many }) => ({
     fields: [invoices.createdBy],
     references: [adminUsers.id],
   }),
+  discountCode: one(discountCodes, {
+    fields: [invoices.discountCodeId],
+    references: [discountCodes.id],
+  }),
   items: many(invoiceItems),
   payments: many(payments),
+}));
+
+export const discountCodesRelations = relations(discountCodes, ({ one, many }) => ({
+  branch: one(branches, { fields: [discountCodes.branchId], references: [branches.id] }),
+  createdByStaff: one(adminUsers, {
+    fields: [discountCodes.createdBy],
+    references: [adminUsers.id],
+  }),
+  /** The redemption ledger: there is no separate redemptions table. */
+  invoices: many(invoices),
 }));
 
 export const invoiceItemsRelations = relations(invoiceItems, ({ one }) => ({
