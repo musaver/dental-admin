@@ -34,6 +34,7 @@ const COLUMN_OF = [
   [E.TREATMENT_PLAN_STATUS, 'treatment_plans', 'status'],
   [E.TREATMENT_PLAN_ITEM_STATUS, 'treatment_plan_items', 'status'],
   [E.DISCOUNT_TYPE, 'treatment_plan_items', 'discountType'],
+  [E.DISCOUNT_TYPE, 'discount_codes', 'discountType'],
   [E.PROCEDURE_CATEGORY, 'procedures', 'category'],
   [E.INVOICE_STATUS, 'invoices', 'status'],
   [E.INVOICE_ITEM_TYPE, 'invoice_items', 'itemType'],

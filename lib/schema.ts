@@ -228,6 +228,46 @@ export const communicationLogs = mysqlTable(
   })
 );
 
+// ── discount_codes ────────────────────────────────────
+export const discountCodes = mysqlTable(
+  'discount_codes',
+  {
+    id: varchar('id', { length: 255 }).notNull().primaryKey(),
+    /**
+     * Uppercased on every write and every lookup (normalizeDiscountCode), the
+     * way phone numbers are, so the unique index is the real duplicate guard.
+     */
+    code: varchar('code', { length: 30 }).notNull(),
+    description: varchar('description', { length: 255 }),
+    /** The same polymorphic pair treatment_plan_items uses. DISCOUNT_TYPE. */
+    discountType: varchar('discountType', { length: 20 }).notNull(),
+    discountValue: int('discountValue').notNull(),
+    /** NULL = valid at every branch. */
+    branchId: varchar('branchId', { length: 255 }),
+    /**
+     * Naive clinic-local wall clock like every datetime here, and a HALF-OPEN
+     * window: valid when validFrom <= now < validUntil. NULL = unbounded.
+     * Compared in JS against clinicNow(), never in SQL — the MySQL server's
+     * own time_zone is not pinned anywhere, only the driver's marshalling is.
+     */
+    validFrom: datetime('validFrom'),
+    validUntil: datetime('validUntil'),
+    /** NULL = unlimited. Enforced ONLY by the conditional UPDATE in
+     *  lib/discount-codes.ts — there is no CHECK constraint to lean on. */
+    maxRedemptions: int('maxRedemptions'),
+    usedCount: int('usedCount').notNull().default(0),
+    isActive: boolean('isActive').notNull().default(true),
+    createdBy: varchar('createdBy', { length: 255 }),
+    createdAt: datetime('createdAt').default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: datetime('updatedAt').default(sql`CURRENT_TIMESTAMP`).$onUpdateFn(() => new Date()),
+  },
+  (table) => ({
+    discountCodesCodeUnique: uniqueIndex('discount_codes_code_unique').on(table.code),
+    idx_dc_active: index('idx_dc_active').on(table.isActive, table.validUntil),
+    idx_dc_branch: index('idx_dc_branch').on(table.branchId),
+  })
+);
+
 // ── invoice_items ─────────────────────────────────────
 export const invoiceItems = mysqlTable(
   'invoice_items',
@@ -264,6 +304,8 @@ export const invoices = mysqlTable(
     branchId: varchar('branchId', { length: 255 }).notNull(),
     visitId: varchar('visitId', { length: 255 }),
     treatmentPlanId: varchar('treatmentPlanId', { length: 255 }),
+    /** Which redeemable code produced the extra discount line, if any. */
+    discountCodeId: varchar('discountCodeId', { length: 255 }),
     issueDate: datetime('issueDate').default(sql`CURRENT_TIMESTAMP`),
     dueDate: datetime('dueDate'),
     subtotal: int('subtotal').notNull(),
@@ -282,6 +324,19 @@ export const invoices = mysqlTable(
     idx_inv_visit: index('idx_inv_visit').on(table.visitId),
     idx_inv_plan: index('idx_inv_plan').on(table.treatmentPlanId),
     invoicesInvoiceNumberUnique: uniqueIndex('invoices_invoiceNumber_unique').on(table.invoiceNumber),
+    /**
+     * A code is redeemable once per patient, enforced by the database rather
+     * than by a SELECT that two concurrent submissions would both pass. MySQL
+     * permits many NULLs in a unique index, so the uncoded invoices — nearly
+     * all of them — are unaffected.
+     *
+     * NOTE: this raises errno 1062 inside the invoice transaction, which is
+     * why isDuplicateInvoiceNumber() matches on the key and not on errno alone.
+     */
+    uq_inv_code_patient: uniqueIndex('uq_inv_code_patient').on(
+      table.discountCodeId,
+      table.patientId
+    ),
   })
 );
 

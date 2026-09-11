@@ -499,6 +499,7 @@ export const AUDIT_ENTITY = {
   MESSAGE_TEMPLATE: 'message_template',
   BRANCH: 'branch',
   PROCEDURE: 'procedure',
+  DISCOUNT_CODE: 'discount_code',
   CLINIC: 'clinic',
 } as const;
 export type AuditEntity = (typeof AUDIT_ENTITY)[keyof typeof AUDIT_ENTITY];

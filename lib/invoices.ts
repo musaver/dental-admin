@@ -8,14 +8,15 @@ import {
   treatmentPlanItems,
   visitProcedures,
 } from '@/lib/schema';
-import {
-  assertInvoiceTotals,
-  computeDiscountAmount,
-  computeInvoiceTotals,
-  computeLineAmount,
-  type InvoiceLine,
-} from '@/lib/money';
+import { computeDiscountAmount } from '@/lib/money';
 import { INVOICE_ITEM_TYPE, INVOICE_STATUS } from '@/lib/enums';
+import {
+  buildExtraDiscountLine,
+  buildPatientDiscountLine,
+  materialiseLines,
+  type DraftLine,
+  type ExtraDiscountInput,
+} from '@/lib/invoice-lines';
 import { toothCount } from '@/lib/odontogram';
 import { clinicNow } from '@/lib/datetime';
 import {
@@ -32,6 +33,9 @@ import { v4 as uuidv4 } from 'uuid';
  * Replaces lib/fee.ts from the education app, which was written against the
  * fee_invoices tables that no longer exist.
  */
+
+/** The pure line-building half, re-exported so callers need only one import. */
+export * from '@/lib/invoice-lines';
 
 type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -69,18 +73,6 @@ export async function allocateInvoiceNumber(
     .limit(1);
 
   return nextInvoiceNumber(branch.code, issuedAt, highest?.invoiceNumber);
-}
-
-export interface DraftLine {
-  description: string;
-  quantity: number;
-  unitPrice: number;
-  discountAmount: number;
-  itemType: string;
-  teeth?: string | null;
-  procedureId?: string | null;
-  visitProcedureId?: string | null;
-  treatmentPlanItemId?: string | null;
 }
 
 /**
@@ -215,73 +207,6 @@ export async function buildLinesFromTreatmentPlan(
     });
 }
 
-/**
- * The patient's standing discount, as a visible line.
- *
- * Rendering it as a line rather than folding it into the header keeps the
- * printed invoice self-explanatory, and the totals rule in lib/money.ts stops
- * it double-counting. Skipped when any line already carries its own discount,
- * so the two never stack silently.
- */
-export function buildPatientDiscountLine(
-  lines: readonly DraftLine[],
-  discountPercent: number
-): DraftLine | null {
-  if (!discountPercent || discountPercent <= 0) return null;
-  if (lines.some((l) => l.discountAmount > 0)) return null;
-
-  const subtotal = lines
-    .filter((l) => l.itemType !== INVOICE_ITEM_TYPE.DISCOUNT)
-    .reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
-
-  const amount = computeDiscountAmount(subtotal, {
-    discountType: 'percentage',
-    value: discountPercent,
-  });
-  if (amount <= 0) return null;
-
-  return {
-    description: `Patient discount (${discountPercent}%)`,
-    quantity: 1,
-    // A discount line is stored negative; computeInvoiceTotals expects that.
-    unitPrice: -amount,
-    discountAmount: 0,
-    itemType: INVOICE_ITEM_TYPE.DISCOUNT,
-  };
-}
-
-/** Turn draft lines into rows, computing each amount and the header totals. */
-export function materialiseLines(invoiceId: string, drafts: readonly DraftLine[], now: Date) {
-  const rows = drafts.map((draft) => {
-    const amount =
-      draft.itemType === INVOICE_ITEM_TYPE.DISCOUNT
-        ? draft.quantity * draft.unitPrice // already negative
-        : computeLineAmount(draft);
-
-    return {
-      id: uuidv4(),
-      invoiceId,
-      procedureId: draft.procedureId ?? null,
-      visitProcedureId: draft.visitProcedureId ?? null,
-      treatmentPlanItemId: draft.treatmentPlanItemId ?? null,
-      description: draft.description.slice(0, 255),
-      teeth: draft.teeth ?? null,
-      quantity: draft.quantity,
-      unitPrice: draft.unitPrice,
-      discountAmount: draft.discountAmount,
-      amount,
-      itemType: draft.itemType,
-      createdAt: now,
-    };
-  });
-
-  const totals = computeInvoiceTotals(rows as unknown as InvoiceLine[]);
-  // Refuses to write an invoice whose header disagrees with its lines.
-  assertInvoiceTotals(rows as unknown as InvoiceLine[], totals);
-
-  return { rows, totals };
-}
-
 export interface CreateInvoiceInput {
   patientId: string;
   branchId: string;
@@ -293,6 +218,10 @@ export interface CreateInvoiceInput {
   lines: DraftLine[];
   /** Adds the patient's standing discount as a line. */
   applyPatientDiscount?: boolean;
+  /** A concession decided at billing time, stacked on top of the above. */
+  extraDiscount?: ExtraDiscountInput | null;
+  /** The redeemable code that produced extraDiscount, when there was one. */
+  discountCodeId?: string | null;
 }
 
 /**
@@ -318,6 +247,13 @@ export async function createInvoice(tx: Executor, input: CreateInvoiceInput) {
     if (discountLine) lines.push(discountLine);
   }
 
+  // AFTER the patient line on purpose: the extra discount compounds on what is
+  // left, which is what keeps the total from going negative.
+  if (input.extraDiscount) {
+    const extraLine = buildExtraDiscountLine(lines, input.extraDiscount);
+    if (extraLine) lines.push(extraLine);
+  }
+
   const invoiceId = uuidv4();
   const { rows, totals } = materialiseLines(invoiceId, lines, now);
   const invoiceNumber = await allocateInvoiceNumber(tx, input.branchId, now);
@@ -329,6 +265,7 @@ export async function createInvoice(tx: Executor, input: CreateInvoiceInput) {
     branchId: input.branchId,
     visitId: input.visitId ?? null,
     treatmentPlanId: input.treatmentPlanId ?? null,
+    discountCodeId: input.discountCodeId ?? null,
     issueDate: now,
     dueDate: input.dueDate ?? null,
     subtotal: totals.subtotal,
@@ -348,12 +285,3 @@ export async function createInvoice(tx: Executor, input: CreateInvoiceInput) {
   return { invoice: header, items: rows, totals };
 }
 
-/** MySQL duplicate-key errno, which is how an invoice-number race surfaces. */
-export function isDuplicateInvoiceNumber(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'errno' in error &&
-    (error as { errno?: number }).errno === 1062
-  );
-}

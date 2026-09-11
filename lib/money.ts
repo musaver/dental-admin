@@ -68,6 +68,10 @@ export function deriveInvoiceStatus(
   totalAmount: number,
   paidAmount: number
 ): 'unpaid' | 'partial' | 'paid' {
+  // Nothing to collect. This MUST be tested before paidAmount, or an invoice
+  // discounted down to zero reads 'unpaid' forever: the paidAmount <= 0 branch
+  // would fire first and there is no payment that could ever settle it.
+  if (totalAmount <= 0) return INVOICE_STATUS.PAID;
   if (paidAmount <= 0) return INVOICE_STATUS.UNPAID;
   if (paidAmount >= totalAmount) return INVOICE_STATUS.PAID;
   return INVOICE_STATUS.PARTIAL;
@@ -188,7 +192,18 @@ export function computeInvoiceTotals(lines: readonly InvoiceLine[]): InvoiceTota
   return { subtotal, discountTotal, totalAmount: subtotal - discountTotal };
 }
 
-/** Throws if the totals and the lines disagree. Call before every write. */
+/**
+ * Throws if the totals and the lines disagree. Call before every write.
+ *
+ * The reconciliation check alone is NOT enough to keep an invoice sane. For a
+ * discount line, computeInvoiceTotals folds back the very number
+ * materialiseLines stored, so `subtotal − discountTotal ≡ Σ(amount)` holds at
+ * EVERY value — including negative ones. An over-discounted invoice reconciles
+ * perfectly and would be written as a bill that owes the patient money, which
+ * then subtracts from the branch's outstanding total in lib/reports.ts. Hence
+ * the two sign checks: they are the only thing standing between a mistyped
+ * discount and corrupted money.
+ */
 export function assertInvoiceTotals(
   lines: readonly InvoiceLine[],
   totals: InvoiceTotals
@@ -201,6 +216,41 @@ export function assertInvoiceTotals(
         `(subtotal ${totals.subtotal} − discount ${totals.discountTotal}).`
     );
   }
+  if (totals.discountTotal > totals.subtotal) {
+    throw new Error(
+      `Invoice discount exceeds its subtotal: discount ${totals.discountTotal} ` +
+        `against subtotal ${totals.subtotal}.`
+    );
+  }
+  if (totals.totalAmount < 0) {
+    throw new Error(
+      `Invoice totalAmount is negative (${totals.totalAmount}). An invoice ` +
+        `cannot owe the patient money; issue a refund instead.`
+    );
+  }
+}
+
+/**
+ * Amount for an EXTRA whole-invoice discount line, stacked on top of whatever
+ * the lines already carry.
+ *
+ * BASE: the percentage is taken on what is still owed AFTER every other
+ * discount, not on the gross subtotal — an extra 20% on top of a 10% patient
+ * discount is 28% off gross, not 30%. The two compound, and that is what makes
+ * a negative total arithmetically impossible rather than merely clamped:
+ * computeDiscountAmount() clamps against the base it is handed, so handing it
+ * the running remainder makes its existing clamp the floor.
+ *
+ * Callers must negate the result once, at the point the line is built. Never
+ * round a negative: Math.round is half-up toward +∞, so round(100.5) is 101
+ * while round(-100.5) is -100 — a one-rupee fork for the same input.
+ */
+export function computeExtraDiscountAmount(
+  lines: readonly InvoiceLine[],
+  discount: DiscountInput | null
+): number {
+  const remaining = Math.max(0, computeInvoiceTotals(lines).totalAmount);
+  return computeDiscountAmount(remaining, discount);
 }
 
 /**

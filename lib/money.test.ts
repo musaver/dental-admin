@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   assertInvoiceTotals,
   computeDiscountAmount,
+  computeExtraDiscountAmount,
   computeInvoiceTotals,
   computeItemNet,
   computeLineAmount,
@@ -287,5 +288,131 @@ describe('computePlanTotals', () => {
       discountTotal: 0,
       netAmount: 0,
     });
+  });
+});
+
+describe('computeExtraDiscountAmount', () => {
+  /** Two procedures, 20,000 gross, no discounts yet. */
+  const plain = (): InvoiceLine[] => [
+    { quantity: 1, unitPrice: 15000, discountAmount: 0, itemType: 'procedure', amount: 15000 },
+    { quantity: 1, unitPrice: 5000, discountAmount: 0, itemType: 'procedure', amount: 5000 },
+  ];
+
+  it('takes a percentage of the gross when nothing else is discounted', () => {
+    assert.equal(
+      computeExtraDiscountAmount(plain(), { discountType: 'percentage', value: 10 }),
+      2000
+    );
+  });
+
+  it('takes a percentage of what is left AFTER a per-line discount', () => {
+    const lines: InvoiceLine[] = [
+      { quantity: 1, unitPrice: 15000, discountAmount: 5000, itemType: 'procedure', amount: 10000 },
+      { quantity: 1, unitPrice: 5000, discountAmount: 0, itemType: 'procedure', amount: 5000 },
+    ];
+    // Remaining is 15,000, not the 20,000 gross.
+    assert.equal(
+      computeExtraDiscountAmount(lines, { discountType: 'percentage', value: 10 }),
+      1500
+    );
+  });
+
+  it('takes a percentage of what is left AFTER a patient discount LINE', () => {
+    const lines: InvoiceLine[] = [
+      ...plain(),
+      { quantity: 1, unitPrice: -2000, discountAmount: 0, itemType: 'discount', amount: -2000 },
+    ];
+    // Remaining is 18,000. Reading the discount line as 0 would give 2,000.
+    assert.equal(
+      computeExtraDiscountAmount(lines, { discountType: 'percentage', value: 10 }),
+      1800
+    );
+  });
+
+  it('clamps a fixed amount to the remaining balance, never below zero', () => {
+    const lines: InvoiceLine[] = [
+      ...plain(),
+      { quantity: 1, unitPrice: -18000, discountAmount: 0, itemType: 'discount', amount: -18000 },
+    ];
+    // Only 2,000 is left; a 25,000 goodwill discount cannot take 25,000.
+    assert.equal(computeExtraDiscountAmount(lines, { discountType: 'fixed', value: 25000 }), 2000);
+  });
+
+  it('returns 0 when the invoice is already fully discounted', () => {
+    const lines: InvoiceLine[] = [
+      ...plain(),
+      { quantity: 1, unitPrice: -20000, discountAmount: 0, itemType: 'discount', amount: -20000 },
+    ];
+    assert.equal(computeExtraDiscountAmount(lines, { discountType: 'percentage', value: 50 }), 0);
+    assert.equal(computeExtraDiscountAmount(lines, { discountType: 'fixed', value: 500 }), 0);
+  });
+
+  it('compounds stacked percentages instead of summing them past 100%', () => {
+    // 60% then 60% is 84% off, not 120% — the whole reason the base is the net.
+    const first = computeExtraDiscountAmount(plain(), { discountType: 'percentage', value: 60 });
+    assert.equal(first, 12000);
+
+    const afterFirst: InvoiceLine[] = [
+      ...plain(),
+      { quantity: 1, unitPrice: -first, discountAmount: 0, itemType: 'discount', amount: -first },
+    ];
+    const second = computeExtraDiscountAmount(afterFirst, {
+      discountType: 'percentage',
+      value: 60,
+    });
+    assert.equal(second, 4800);
+    // 16% of gross still payable, and crucially not negative.
+    assert.equal(20000 - first - second, 3200);
+  });
+});
+
+describe('assertInvoiceTotals rejects impossible money', () => {
+  it('throws when the discounts exceed the subtotal', () => {
+    // These lines reconcile perfectly — SUM(amount) === totalAmount — which is
+    // exactly why the reconciliation check alone cannot be trusted.
+    const lines: InvoiceLine[] = [
+      { quantity: 1, unitPrice: 20000, discountAmount: 0, itemType: 'procedure', amount: 20000 },
+      { quantity: 1, unitPrice: -23000, discountAmount: 0, itemType: 'discount', amount: -23000 },
+    ];
+    const totals = computeInvoiceTotals(lines);
+    assert.equal(totals.totalAmount, -3000);
+    assert.equal(
+      lines.reduce((sum, l) => sum + l.amount, 0),
+      totals.totalAmount,
+      'the trap: a negative invoice reconciles'
+    );
+    assert.throws(() => assertInvoiceTotals(lines, totals), /exceeds its subtotal/);
+  });
+
+  it('still accepts an invoice discounted exactly to zero', () => {
+    const lines: InvoiceLine[] = [
+      { quantity: 1, unitPrice: 20000, discountAmount: 0, itemType: 'procedure', amount: 20000 },
+      { quantity: 1, unitPrice: -20000, discountAmount: 0, itemType: 'discount', amount: -20000 },
+    ];
+    const totals = computeInvoiceTotals(lines);
+    assert.equal(totals.totalAmount, 0);
+    assert.doesNotThrow(() => assertInvoiceTotals(lines, totals));
+  });
+});
+
+describe('deriveInvoiceStatus settles a fully discounted invoice', () => {
+  it('reads a zero total as paid, not unpaid', () => {
+    // Otherwise a 100% discount sits in the outstanding worklist forever: no
+    // payment can ever satisfy `paidAmount >= totalAmount` once the
+    // `paidAmount <= 0` branch has already returned 'unpaid'.
+    assert.equal(deriveInvoiceStatus(0, 0), 'paid');
+  });
+
+  it('leaves ordinary invoices alone', () => {
+    assert.equal(deriveInvoiceStatus(20000, 0), 'unpaid');
+    assert.equal(deriveInvoiceStatus(20000, 5000), 'partial');
+    assert.equal(deriveInvoiceStatus(20000, 20000), 'paid');
+  });
+
+  it('keeps a waived zero-total invoice waived', () => {
+    assert.equal(
+      recomputeInvoiceStatus({ totalAmount: 0, paidAmount: 0, currentStatus: 'waived' }),
+      'waived'
+    );
   });
 });
