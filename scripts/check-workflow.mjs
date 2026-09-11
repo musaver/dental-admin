@@ -347,6 +347,13 @@ try {
   check('and that visit is not on the unbilled worklist either',
     !(await get('/api/visits/unbilled?pageSize=100')).body?.rows?.some((r) => r.id === visit5Id));
 
+  // The visit page must agree, or it shows a "Raise invoice" button that 409s
+  // and reappears unchanged — a permanently dead button.
+  const planBilled = await get(`/api/visits/${visit5Id}`);
+  check('and the visit page marks the plan-billed work as invoiced',
+    planBilled.body?.procedures?.every((p) => p.invoiced === true),
+    JSON.stringify(planBilled.body?.procedures?.map((p) => p.invoiced)));
+
 } finally {
   // Child-first teardown.
   const order = [
