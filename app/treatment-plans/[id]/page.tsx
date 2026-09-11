@@ -8,10 +8,15 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { useSession } from 'next-auth/react';
 import { api, ApiError } from '@/lib/api-client';
 import { fmtDate } from '@/lib/datetime';
 import { formatPKR } from '@/lib/money';
 import { humanize, DISCOUNT_TYPE, valuesOf } from '@/lib/enums';
+import { PERMISSIONS } from '@/lib/permissions';
 import { parseTeeth } from '@/lib/odontogram';
 import { patientName } from '@/lib/patient-identity';
 
@@ -51,6 +56,24 @@ export default function PlanDetailPage() {
   const [newItem, setNewItem] = useState({
     procedureId: '', teeth: '', discountType: '', discountValue: '',
   });
+
+  const { data: session } = useSession();
+  const canWaive = ((session?.user?.permissions as string[] | undefined) ?? [])
+    .includes(PERMISSIONS.BILLING_WAIVE);
+
+  const [invoicing, setInvoicing] = useState(false);
+  const [invoiceForm, setInvoiceForm] = useState({
+    discountCode: '', discountType: '', discountValue: '', reason: '',
+  });
+
+  /**
+   * A code and a manual discount are mutually exclusive — the server rejects
+   * both together, so the form disables whichever the user is not filling in
+   * rather than letting them discover it on submit.
+   */
+  const usingCode = invoiceForm.discountCode.trim().length > 0;
+  const usingManual =
+    invoiceForm.discountType.length > 0 || invoiceForm.discountValue.length > 0;
 
   const load = useCallback(async () => {
     try {
@@ -261,19 +284,7 @@ export default function PlanDetailPage() {
           </Button>
         ))}
         {(plan.status === 'accepted' || plan.status === 'in_progress' || plan.status === 'completed') && (
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                const result = await api.post<{ invoice: { id: string } }>('/api/invoices', {
-                  patientId: plan.patientId,
-                  treatmentPlanId: plan.id,
-                });
-                router.push(`/billing/${result.invoice.id}`);
-              })
-            }
-          >
+          <Button variant="outline" disabled={busy} onClick={() => setInvoicing(true)}>
             Invoice this plan
           </Button>
         )}
@@ -281,6 +292,94 @@ export default function PlanDetailPage() {
           <Link href="/treatment-plans">All plans</Link>
         </Button>
       </div>
+
+      <Dialog open={invoicing} onOpenChange={setInvoicing}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader><DialogTitle>Invoice this plan</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Anything already billed is skipped. The patient&rsquo;s standing
+              discount is applied automatically.
+            </p>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="invCode">Discount code</Label>
+              <Input id="invCode" value={invoiceForm.discountCode} disabled={usingManual}
+                placeholder="e.g. SUMMER20"
+                onChange={(e) => setInvoiceForm({ ...invoiceForm, discountCode: e.target.value })} />
+            </div>
+
+            {canWaive && (
+              <>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  or a one-off discount
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="invType">Type</Label>
+                    <select id="invType" className={selectClass} disabled={usingCode}
+                      value={invoiceForm.discountType}
+                      onChange={(e) => setInvoiceForm({ ...invoiceForm, discountType: e.target.value })}>
+                      <option value="">None</option>
+                      {valuesOf(DISCOUNT_TYPE).map((t) => (
+                        <option key={t} value={t}>{humanize(t)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="invValue">
+                      {invoiceForm.discountType === DISCOUNT_TYPE.PERCENTAGE ? '%' : 'Rs.'}
+                    </Label>
+                    <Input id="invValue" type="number" min={1}
+                      max={invoiceForm.discountType === DISCOUNT_TYPE.PERCENTAGE ? 100 : undefined}
+                      disabled={usingCode || !invoiceForm.discountType}
+                      value={invoiceForm.discountValue}
+                      onChange={(e) => setInvoiceForm({ ...invoiceForm, discountValue: e.target.value })} />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="invReason">Reason</Label>
+                  <Input id="invReason" maxLength={120} disabled={usingCode || !usingManual}
+                    placeholder="Why this discount was given"
+                    value={invoiceForm.reason}
+                    onChange={(e) => setInvoiceForm({ ...invoiceForm, reason: e.target.value })} />
+                  <p className="text-xs text-muted-foreground">
+                    Printed on the invoice and recorded in the audit trail.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setInvoicing(false)}>Cancel</Button>
+            <Button
+              disabled={busy || (usingManual && (!invoiceForm.discountValue || !invoiceForm.reason.trim()))}
+              onClick={() =>
+                run(async () => {
+                  const result = await api.post<{ invoice: { id: string } }>('/api/invoices', {
+                    patientId: plan.patientId,
+                    treatmentPlanId: plan.id,
+                    ...(usingCode ? { discountCode: invoiceForm.discountCode.trim() } : {}),
+                    ...(usingManual && !usingCode
+                      ? {
+                          extraDiscount: {
+                            discountType: invoiceForm.discountType,
+                            value: Number(invoiceForm.discountValue),
+                            reason: invoiceForm.reason.trim(),
+                          },
+                        }
+                      : {}),
+                  });
+                  setInvoicing(false);
+                  router.push(`/billing/${result.invoice.id}`);
+                })
+              }
+            >
+              {busy ? 'Creating…' : 'Create invoice'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
