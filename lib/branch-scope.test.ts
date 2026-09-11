@@ -4,6 +4,7 @@ import {
   AuthError,
   canAccessBranch,
   resolveBranchScope,
+  resolveWritingBranch,
   type BranchScopable,
 } from './branch-scope.ts';
 
@@ -71,5 +72,44 @@ describe('canAccessBranch', () => {
   it('denies a null branch to scoped staff', () => {
     // A row with no branch cannot be proven to belong to them.
     assert.equal(canAccessBranch(atMain, null), false);
+  });
+});
+
+describe('resolveWritingBranch', () => {
+  it('makes head office choose, rather than guessing a branch', () => {
+    // An MRN is issued per branch, so the wrong guess files a patient's whole
+    // clinical history under the wrong clinic. null means "ask them".
+    assert.equal(resolveWritingBranch(headOffice, null), null);
+    assert.equal(resolveWritingBranch(headOffice, undefined), null);
+    assert.equal(resolveWritingBranch(headOffice, ''), null);
+  });
+
+  it('treats the read-side "all" as no choice at all', () => {
+    assert.equal(resolveWritingBranch(headOffice, 'all'), null);
+  });
+
+  it('honours the branch head office names', () => {
+    assert.equal(resolveWritingBranch(headOffice, 'branch-clifton'), 'branch-clifton');
+  });
+
+  it('uses a scoped user’s own branch without being asked', () => {
+    assert.equal(resolveWritingBranch(atMain, null), 'branch-main');
+    assert.equal(resolveWritingBranch(atMain, 'branch-main'), 'branch-main');
+  });
+
+  it('ignores "all" from a scoped user rather than widening them', () => {
+    assert.equal(resolveWritingBranch(atMain, 'all'), 'branch-main');
+  });
+
+  it('refuses a scoped user registering into another branch', () => {
+    assert.throws(
+      () => resolveWritingBranch(atMain, 'branch-clifton'),
+      (error: unknown) => error instanceof AuthError && error.status === 403
+    );
+  });
+
+  it('refuses a contradictory context instead of guessing', () => {
+    const broken: BranchScopable = { branchId: null, isHeadOffice: false };
+    assert.throws(() => resolveWritingBranch(broken, null), AuthError);
   });
 });
