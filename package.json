@@ -20,6 +20,7 @@
     "check:rbac": "jiti scripts/check-rbac.mjs",
     "check:invariants": "node scripts/check-invariants.mjs",
     "repair:orphans": "node scripts/repair-orphans.mjs",
+    "repair:lifecycles": "node scripts/repair-lifecycles.mjs",
     "check:patients": "jiti scripts/check-patients.mjs",
     "check:plans": "jiti scripts/check-plans.mjs",
     "check:clinical": "jiti scripts/check-clinical.mjs",

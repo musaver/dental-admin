@@ -147,6 +147,41 @@ await expectEmpty(
       AND (v.id IS NULL OR v.treatmentPlanItemId IS NULL OR v.treatmentPlanItemId <> t.id)`
 );
 
+console.log('\nLifecycle consistency:');
+
+// Status and its parallel timestamps are written together by
+// applyStatusChange(); a hole means something wrote the column directly.
+// Repair with: npm run repair:lifecycles
+await expectEmpty(
+  'a completed appointment has all three timestamps',
+  `SELECT id, status, completedAt, checkedInAt, confirmedAt
+     FROM appointments
+    WHERE status = 'completed'
+      AND (completedAt IS NULL OR checkedInAt IS NULL OR confirmedAt IS NULL)`
+);
+
+// Completing a visit closes its appointment. Cancelled is the one legitimate
+// exception: the lifecycle helper deliberately skips it rather than
+// resurrecting a cancellation the desk already rebooked around.
+await expectEmpty(
+  'a completed visit has a closed appointment',
+  `SELECT v.id AS visitId, a.id AS appointmentId, a.status
+     FROM visits v
+     JOIN appointments a ON a.id = v.appointmentId
+    WHERE v.status = 'completed'
+      AND a.status NOT IN ('completed', 'cancelled')`
+);
+
+// 'booked' means the recall is waiting on an appointment that has not happened
+// yet. Once it has, the recall is answered.
+await expectEmpty(
+  'no recall is still booked against a completed appointment',
+  `SELECT r.id, r.recallType, r.status, r.appointmentId
+     FROM recalls r
+     JOIN appointments a ON a.id = r.appointmentId
+    WHERE r.status = 'booked' AND a.status = 'completed'`
+);
+
 console.log('\nDangling references (no foreign keys exist to prevent these):');
 
 const DANGLING = [
