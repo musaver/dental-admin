@@ -183,6 +183,50 @@ export async function unlinkRecallFromAppointment(
 }
 
 /**
+ * Close a recall once the appointment booked from it has been completed.
+ *
+ * Without this a recall reaches 'booked' and stays there for ever — before
+ * this existed, RECALL_STATUS.COMPLETED was written nowhere outside the seeds.
+ *
+ * Unlike unlinkRecallFromAppointment(), the pointer pair is deliberately left
+ * INTACT: recalls.appointmentId keeps naming the appointment that satisfied
+ * the recall, which is what makes "when was this patient last seen for a
+ * checkup" answerable. Nulling one side while appointments.recallId still
+ * points back is precisely the drift check:invariants hunts for.
+ *
+ * Guarded on the recall still being 'booked' AND still pointing at this
+ * appointment, so a recall that has since been cancelled, returned to the
+ * worklist, or re-pointed at a rebooking is not stomped. Returns whether it
+ * actually closed one.
+ */
+export async function completeRecallForAppointment(
+  tx: Executor,
+  recallId: string,
+  appointmentId: string
+): Promise<boolean> {
+  const [current] = await tx
+    .select({ id: recalls.id })
+    .from(recalls)
+    .where(
+      and(
+        eq(recalls.id, recallId),
+        eq(recalls.appointmentId, appointmentId),
+        eq(recalls.status, RECALL_STATUS.BOOKED)
+      )
+    )
+    .limit(1);
+
+  if (!current) return false;
+
+  await tx
+    .update(recalls)
+    .set({ status: RECALL_STATUS.COMPLETED, updatedAt: clinicNow() })
+    .where(eq(recalls.id, recallId));
+
+  return true;
+}
+
+/**
  * Is a pending recall overdue?
  *
  * Derived rather than stored. An 'overdue' status would need a nightly job to

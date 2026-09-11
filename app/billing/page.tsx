@@ -20,6 +20,7 @@ import { formatPKR, invoiceBalance } from '@/lib/money';
 import { humanize } from '@/lib/enums';
 import { patientName } from '@/lib/patient-identity';
 import type { Paginated } from '@/lib/pagination';
+import UnbilledVisits from '@/app/components/billing/UnbilledVisits';
 
 interface InvoiceRow {
   id: string;
@@ -49,6 +50,8 @@ function BillingList() {
   const searchParams = useSearchParams();
   const status = searchParams.get('status') ?? '';
   const page = Number(searchParams.get('page') ?? 1);
+  const view = searchParams.get('view') ?? '';
+  const unbilled = view === 'unbilled';
 
   const [data, setData] = useState<Paginated<InvoiceRow> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,9 +69,11 @@ function BillingList() {
     }
   }, [status, page]);
 
+  const showInvoices = !unbilled;
+
   useEffect(() => {
-    load();
-  }, [load]);
+    if (showInvoices) load();
+  }, [load, showInvoices]);
 
   const setParams = (next: Record<string, string | number | null>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -87,132 +92,162 @@ function BillingList() {
     <div className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Invoices</h1>
-          {data && (
+          <h1 className="text-2xl font-bold tracking-tight">
+            {unbilled ? 'Unbilled visits' : 'Invoices'}
+          </h1>
+          {unbilled ? (
             <p className="text-sm text-muted-foreground mt-0.5">
-              {data.total} invoice{data.total === 1 ? '' : 's'}
-              {outstanding > 0 && ` · ${formatPKR(outstanding)} outstanding on this page`}
+              Completed visits with work nobody has invoiced yet, oldest first.
             </p>
+          ) : (
+            data && (
+              <p className="text-sm text-muted-foreground mt-0.5">
+                {data.total} invoice{data.total === 1 ? '' : 's'}
+                {outstanding > 0 && ` · ${formatPKR(outstanding)} outstanding on this page`}
+              </p>
+            )
           )}
         </div>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">
         {[
-          { value: '', label: 'All' },
-          { value: 'unpaid,partial', label: 'Outstanding' },
-          { value: 'paid', label: 'Paid' },
-          { value: 'waived', label: 'Waived' },
-          { value: 'refunded', label: 'Refunded' },
-        ].map((option) => (
+          { value: '', label: 'Invoices' },
+          { value: 'unbilled', label: 'Unbilled visits' },
+        ].map((tab) => (
           <Button
-            key={option.value}
+            key={tab.value}
             size="sm"
-            variant={status === option.value ? 'default' : 'outline'}
-            onClick={() => setParams({ status: option.value, page: 1 })}
+            variant={view === tab.value ? 'default' : 'ghost'}
+            onClick={() => setParams({ view: tab.value, status: null, page: 1 })}
           >
-            {option.label}
+            {tab.label}
           </Button>
         ))}
       </div>
 
-      {error && (
-        <div role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+      {unbilled && <UnbilledVisits />}
+
+      {showInvoices && (
+        <>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {[
+            { value: '', label: 'All' },
+            { value: 'unpaid,partial', label: 'Outstanding' },
+            { value: 'paid', label: 'Paid' },
+            { value: 'waived', label: 'Waived' },
+            { value: 'refunded', label: 'Refunded' },
+          ].map((option) => (
+            <Button
+              key={option.value}
+              size="sm"
+              variant={status === option.value ? 'default' : 'outline'}
+              onClick={() => setParams({ status: option.value, page: 1 })}
+            >
+              {option.label}
+            </Button>
+          ))}
         </div>
-      )}
 
-      <Card className="py-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Invoice</TableHead>
-              <TableHead>Patient</TableHead>
-              <TableHead>Issued</TableHead>
-              <TableHead className="text-right">Total</TableHead>
-              <TableHead className="text-right">Paid</TableHead>
-              <TableHead className="text-right">Balance</TableHead>
-              <TableHead>Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading && (
-              <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground">Loading…</TableCell>
-              </TableRow>
-            )}
-
-            {!loading && data?.rows.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground">
-                  No invoices yet.
-                </TableCell>
-              </TableRow>
-            )}
-
-            {!loading &&
-              data?.rows.map((invoice) => {
-                const balance = invoiceBalance(invoice);
-                return (
-                  <TableRow key={invoice.id}>
-                    <TableCell className="font-mono text-xs">
-                      <Link href={`/billing/${invoice.id}`} className="hover:underline">
-                        {invoice.invoiceNumber}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      {invoice.patientFirstName ? (
-                        <Link href={`/patients/${invoice.patientId}`} className="hover:underline">
-                          {patientName({
-                            firstName: invoice.patientFirstName,
-                            lastName: invoice.patientLastName,
-                          })}
-                        </Link>
-                      ) : (
-                        <span className="text-muted-foreground">Unknown</span>
-                      )}
-                      {invoice.patientMrn && (
-                        <div className="text-xs text-muted-foreground font-mono">{invoice.patientMrn}</div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {fmtDate(new Date(invoice.issueDate))}
-                    </TableCell>
-                    <TableCell className="text-right">{formatPKR(invoice.totalAmount)}</TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {formatPKR(invoice.paidAmount)}
-                    </TableCell>
-                    <TableCell
-                      className={`text-right font-medium ${balance > 0 ? 'text-amber-600 dark:text-amber-500' : ''}`}
-                    >
-                      {formatPKR(balance)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className={STATUS_STYLES[invoice.status] ?? ''}>
-                        {humanize(invoice.status)}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-          </TableBody>
-        </Table>
-      </Card>
-
-      {data && data.pageCount > 1 && (
-        <div className="mt-4 flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            Page {data.page} of {data.pageCount}
-          </span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={data.page <= 1} onClick={() => setParams({ page: data.page - 1 })}>
-              Previous
-            </Button>
-            <Button variant="outline" size="sm" disabled={data.page >= data.pageCount} onClick={() => setParams({ page: data.page + 1 })}>
-              Next
-            </Button>
+        {error && (
+          <div role="alert" className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
           </div>
-        </div>
+        )}
+
+        <Card className="py-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Invoice</TableHead>
+                <TableHead>Patient</TableHead>
+                <TableHead>Issued</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-right">Paid</TableHead>
+                <TableHead className="text-right">Balance</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-muted-foreground">Loading…</TableCell>
+                </TableRow>
+              )}
+
+              {!loading && data?.rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-muted-foreground">
+                    No invoices yet.
+                  </TableCell>
+                </TableRow>
+              )}
+
+              {!loading &&
+                data?.rows.map((invoice) => {
+                  const balance = invoiceBalance(invoice);
+                  return (
+                    <TableRow key={invoice.id}>
+                      <TableCell className="font-mono text-xs">
+                        <Link href={`/billing/${invoice.id}`} className="hover:underline">
+                          {invoice.invoiceNumber}
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        {invoice.patientFirstName ? (
+                          <Link href={`/patients/${invoice.patientId}`} className="hover:underline">
+                            {patientName({
+                              firstName: invoice.patientFirstName,
+                              lastName: invoice.patientLastName,
+                            })}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">Unknown</span>
+                        )}
+                        {invoice.patientMrn && (
+                          <div className="text-xs text-muted-foreground font-mono">{invoice.patientMrn}</div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {fmtDate(new Date(invoice.issueDate))}
+                      </TableCell>
+                      <TableCell className="text-right">{formatPKR(invoice.totalAmount)}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {formatPKR(invoice.paidAmount)}
+                      </TableCell>
+                      <TableCell
+                        className={`text-right font-medium ${balance > 0 ? 'text-amber-600 dark:text-amber-500' : ''}`}
+                      >
+                        {formatPKR(balance)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className={STATUS_STYLES[invoice.status] ?? ''}>
+                          {humanize(invoice.status)}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+            </TableBody>
+          </Table>
+        </Card>
+
+        {data && data.pageCount > 1 && (
+          <div className="mt-4 flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">
+              Page {data.page} of {data.pageCount}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" disabled={data.page <= 1} onClick={() => setParams({ page: data.page - 1 })}>
+                Previous
+              </Button>
+              <Button variant="outline" size="sm" disabled={data.page >= data.pageCount} onClick={() => setParams({ page: data.page + 1 })}>
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   );

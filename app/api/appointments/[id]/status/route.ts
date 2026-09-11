@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { appointments, treatmentPlanItems } from '@/lib/schema';
+import { appointments } from '@/lib/schema';
 import { withAuth } from '@/lib/rbac';
 import { PERMISSIONS, hasPermission } from '@/lib/permissions';
 import { loadAppointment } from '@/lib/loaders';
@@ -8,7 +8,7 @@ import { writeAuditLog } from '@/lib/audit';
 import { APPOINTMENT_STATUS, AUDIT_ACTION, AUDIT_ENTITY, valuesOf } from '@/lib/enums';
 import { applyStatusChange, canTransition } from '@/lib/appointments';
 import { unlinkAppointmentFromPlanItem } from '@/lib/derive';
-import { unlinkRecallFromAppointment } from '@/lib/recalls';
+import { completeRecallForAppointment, unlinkRecallFromAppointment } from '@/lib/recalls';
 import { clinicNow } from '@/lib/datetime';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -71,6 +71,7 @@ export const POST = withAuth(null, async (req, ctx, { params }: Params) => {
   }
 
   const now = clinicNow();
+  let recallClosed = false;
   const patch = applyStatusChange({
     from: before.status,
     to: status as never,
@@ -96,6 +97,12 @@ export const POST = withAuth(null, async (req, ctx, { params }: Params) => {
       if (before.recallId) {
         await unlinkRecallFromAppointment(tx, before.recallId, id);
       }
+    } else if (status === APPOINTMENT_STATUS.COMPLETED && before.recallId) {
+      // The recall has been answered. Not every completion comes through a
+      // visit — a checkup can be closed straight from the diary — so this
+      // route has to close it too, or the recall sits at 'booked' for ever.
+      // The pointer pair stays intact; see lib/recalls.ts.
+      recallClosed = await completeRecallForAppointment(tx, before.recallId, id);
     }
   });
 
@@ -109,7 +116,11 @@ export const POST = withAuth(null, async (req, ctx, { params }: Params) => {
     patientId: before.patientId,
     branchId: before.branchId,
     before: { status: before.status },
-    after: { status: after.status, ...(reason ? { reason } : {}) },
+    after: {
+      status: after.status,
+      ...(reason ? { reason } : {}),
+      ...(recallClosed ? { recallClosedId: before.recallId } : {}),
+    },
     request: req,
   });
 
