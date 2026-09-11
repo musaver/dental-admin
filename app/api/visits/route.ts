@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { adminUsers, appointments, patients, visits } from '@/lib/schema';
+import { adminUsers, patients, visits } from '@/lib/schema';
 import { withAuth, resolveBranchScope } from '@/lib/rbac';
 import { PERMISSIONS } from '@/lib/permissions';
-import { loadPatient } from '@/lib/loaders';
+import { loadAppointment, loadPatient } from '@/lib/loaders';
 import { writeAuditLog } from '@/lib/audit';
 import {
   APPOINTMENT_STATUS,
@@ -11,6 +11,10 @@ import {
   AUDIT_ENTITY,
   VISIT_STATUS,
 } from '@/lib/enums';
+import {
+  advanceAppointment,
+  type AppointmentAdvanceResult,
+} from '@/lib/appointment-lifecycle';
 import { parsePageParams, paginate } from '@/lib/pagination';
 import { clinicNow } from '@/lib/datetime';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -74,6 +78,21 @@ export const POST = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx) => {
   }
   const input = parsed.data;
   const patient = await loadPatient(ctx, input.patientId);
+
+  // The appointment is branch-checked too, not just the patient. Without this
+  // a client-supplied appointmentId reaches the UPDATE below unvalidated, and
+  // any clinical_edit user could move another branch's appointment — which,
+  // because in_progress blocks a slot, would also take out their chair.
+  if (input.appointmentId) {
+    const appointment = await loadAppointment(ctx, input.appointmentId);
+    if (appointment.patientId !== patient.id) {
+      return NextResponse.json(
+        { error: 'That appointment belongs to another patient.' },
+        { status: 400 }
+      );
+    }
+  }
+
   const now = clinicNow();
 
   const row = {
@@ -93,18 +112,28 @@ export const POST = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx) => {
     updatedAt: now,
   };
 
-  await db.transaction(async (tx) => {
+  const opening = await db.transaction(async (tx): Promise<AppointmentAdvanceResult | null> => {
     await tx.insert(visits).values(row);
 
     // Opening a visit is what "in progress" means for the appointment. The
     // schema has no in-progress timestamp, so the visit's own createdAt is
     // the record of when work started.
+    //
+    // Through the lifecycle helper so the transition is checked: a patient
+    // nobody checked in gets a truthful checkedInAt on the way past, and a
+    // cancelled or completed appointment is no longer dragged back into the
+    // chair-availability set.
     if (input.appointmentId) {
-      await tx
-        .update(appointments)
-        .set({ status: APPOINTMENT_STATUS.IN_PROGRESS, updatedAt: now })
-        .where(eq(appointments.id, input.appointmentId));
+      return advanceAppointment(tx, {
+        appointmentId: input.appointmentId,
+        to: APPOINTMENT_STATUS.IN_PROGRESS,
+        actor: ctx,
+        now,
+        request: req,
+      });
     }
+
+    return null;
   });
 
   await writeAuditLog({
@@ -118,5 +147,7 @@ export const POST = withAuth(PERMISSIONS.CLINICAL_EDIT, async (req, ctx) => {
     request: req,
   });
 
-  return NextResponse.json(row, { status: 201 });
+  // `warnings` mirrors POST /api/appointments: the visit is recorded either
+  // way, but if the appointment could not follow it the desk should hear so.
+  return NextResponse.json({ ...row, warnings: opening?.warnings ?? [] }, { status: 201 });
 });
