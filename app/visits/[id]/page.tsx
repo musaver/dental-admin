@@ -121,8 +121,9 @@ export default function VisitPage() {
   const editable = data.visit.status === 'in_progress';
   const can = data.permissions;
   const completed = data.visit.status === 'completed';
-  // Mirrors buildLinesFromVisit()'s filter predicate-for-predicate. If the two
-  // drift, the button offers an invoice the server will refuse.
+  // `invoiced` is computed server-side against BOTH invoice_items pointers, so
+  // this matches buildLinesFromVisit()'s filter. If the two drift, the button
+  // offers an invoice the server refuses and comes straight back.
   const hasUnbilled = data.procedures.some((p) => p.status !== 'cancelled' && !p.invoiced);
   const chosen = catalogue.find((p) => p.id === newProcedure.procedureId);
   const chosenTeeth = parseTeeth(newProcedure.teeth.split(/[\s,]+/).join(','));

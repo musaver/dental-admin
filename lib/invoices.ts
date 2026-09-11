@@ -23,7 +23,7 @@ import {
   invoicePeriod,
   nextInvoiceNumber,
 } from '@/lib/invoice-number';
-import { and, desc, eq, isNotNull, like } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, like } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -131,13 +131,19 @@ export async function buildLinesFromVisit(
   // The seed enforces this by hand — scripts/seed/06-billing.mjs: "a plan
   // invoice only carries items that have NOT been through a chair yet" — which
   // made the demo data look clean while production was not.
+  const planItemIds = performed
+    .map((p) => p.treatmentPlanItemId)
+    .filter((id): id is string => Boolean(id));
+
   const alreadyInvoicedPlanItems = new Set(
-    (
-      await tx
-        .select({ treatmentPlanItemId: invoiceItems.treatmentPlanItemId })
-        .from(invoiceItems)
-        .where(isNotNull(invoiceItems.treatmentPlanItemId))
-    ).map((r) => r.treatmentPlanItemId)
+    planItemIds.length
+      ? (
+          await tx
+            .select({ treatmentPlanItemId: invoiceItems.treatmentPlanItemId })
+            .from(invoiceItems)
+            .where(inArray(invoiceItems.treatmentPlanItemId, planItemIds))
+        ).map((r) => r.treatmentPlanItemId)
+      : []
   );
 
   return performed
