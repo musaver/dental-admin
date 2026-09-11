@@ -179,11 +179,19 @@ const overdueTasks = await one(
   "SELECT COUNT(*) n FROM tasks WHERE status = 'open' AND dueDate IS NOT NULL AND dueDate < NOW()");
 check(`overdue tasks (${overdueTasks.n})`, overdueTasks.n > 0);
 
+// Matches lib/reports.ts UNBILLED and buildLinesFromVisit() — per PROCEDURE,
+// not per visit. "No invoice with that visitId" would drop a part-billed visit
+// off the worklist for ever with work still unbilled. One definition, repo-wide.
 const uninvoiced = await one(`
-  SELECT COUNT(*) n FROM visits v
+  SELECT COUNT(DISTINCT v.id) n
+    FROM visits v
+    JOIN visit_procedures vp ON vp.visitId = v.id AND vp.status <> 'cancelled'
    WHERE v.status = 'completed'
-     AND EXISTS (SELECT 1 FROM visit_procedures p WHERE p.visitId = v.id)
-     AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.visitId = v.id)`);
+     AND NOT EXISTS (SELECT 1 FROM invoice_items ii WHERE ii.visitProcedureId = vp.id)
+     AND NOT EXISTS (
+       SELECT 1 FROM invoice_items ii
+        WHERE vp.treatmentPlanItemId IS NOT NULL
+          AND ii.treatmentPlanItemId = vp.treatmentPlanItemId)`);
 check(`completed visits still to bill (${uninvoiced.n})`, uninvoiced.n > 0);
 
 /* ── Conventions the schema cannot enforce ────────────────────────────── */

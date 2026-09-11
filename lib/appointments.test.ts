@@ -3,8 +3,10 @@ import { describe, it } from 'node:test';
 import {
   applyReschedule,
   applyStatusChange,
+  applyStatusPath,
   canTransition,
   CLOSED_STATUSES,
+  statusPath,
   waitingMinutes,
   waitSeverity,
 } from './appointments.ts';
@@ -216,5 +218,118 @@ describe('the waiting queue', () => {
 describe('CLOSED_STATUSES', () => {
   it('covers every way an appointment ends', () => {
     assert.deepEqual([...CLOSED_STATUSES].sort(), ['cancelled', 'completed', 'no_show']);
+  });
+});
+
+describe('statusPath', () => {
+  it('goes straight there when the hop is already legal', () => {
+    assert.deepEqual(statusPath('checked_in', 'completed'), ['completed']);
+    assert.deepEqual(statusPath('in_progress', 'completed'), ['completed']);
+  });
+
+  it('routes a forgotten check-in through checked_in', () => {
+    // The front desk never pressed "check in", but the patient is in the
+    // chair — the visit being completed is the proof.
+    assert.deepEqual(statusPath('scheduled', 'completed'), ['checked_in', 'completed']);
+    assert.deepEqual(statusPath('confirmed', 'completed'), ['checked_in', 'completed']);
+  });
+
+  it('lets a mis-clicked no-show reach completed', () => {
+    assert.deepEqual(statusPath('no_show', 'completed'), ['checked_in', 'completed']);
+  });
+
+  it('returns an empty path when there is nothing to do', () => {
+    assert.deepEqual(statusPath('completed', 'completed'), []);
+  });
+
+  it('finds no route out of a terminal status', () => {
+    assert.equal(statusPath('cancelled', 'completed'), null);
+    assert.equal(statusPath('completed', 'in_progress'), null);
+  });
+
+  it('never routes THROUGH cancelled to get somewhere else', () => {
+    // Cancelled is terminal, so this holds by construction — pinned because a
+    // future edit to APPOINTMENT_TRANSITIONS could quietly break it.
+    for (const from of ['scheduled', 'confirmed', 'checked_in', 'in_progress', 'no_show']) {
+      for (const to of ['completed', 'in_progress', 'checked_in'] as const) {
+        const path = statusPath(from, to);
+        if (path) assert.equal(path.includes('cancelled'), false, `${from} → ${to}`);
+      }
+    }
+  });
+
+  it('walks to in_progress the same way', () => {
+    assert.deepEqual(statusPath('scheduled', 'in_progress'), ['checked_in', 'in_progress']);
+    assert.deepEqual(statusPath('checked_in', 'in_progress'), ['in_progress']);
+  });
+
+  it('rejects an unknown status rather than letting it through', () => {
+    assert.equal(statusPath('archived', 'completed'), null);
+  });
+});
+
+describe('applyStatusPath', () => {
+  it('leaves no holes in the timeline when check-in was skipped', () => {
+    const patch = applyStatusPath({
+      from: 'scheduled',
+      path: ['checked_in', 'completed'],
+      now,
+      actorId,
+      existing: { confirmedAt: null, checkedInAt: null },
+    });
+
+    assert.equal(patch.status, 'completed');
+    assert.equal(patch.completedAt?.getTime(), now.getTime());
+    assert.equal(patch.checkedInAt?.getTime(), now.getTime());
+    assert.equal(patch.confirmedAt?.getTime(), now.getTime());
+  });
+
+  it('preserves a real check-in rather than restamping it', () => {
+    const checkedInAt = addMinutes(now, -45);
+
+    const patch = applyStatusPath({
+      from: 'checked_in',
+      path: ['completed'],
+      now,
+      actorId,
+      existing: { confirmedAt: null, checkedInAt },
+    });
+
+    assert.equal(patch.checkedInAt?.getTime(), checkedInAt.getTime());
+    assert.equal(patch.completedAt?.getTime(), now.getTime());
+  });
+
+  it('does not let the second hop overwrite what the first one stamped', () => {
+    // checked_in stamps checkedInAt; completed must then see that value as
+    // "existing" rather than stamping its own over the top. Both are `now`
+    // here, so the guard is that the first hop's value survives at all.
+    const patch = applyStatusPath({
+      from: 'confirmed',
+      path: ['checked_in', 'completed'],
+      now,
+      actorId,
+      existing: { confirmedAt: addMinutes(now, -600), checkedInAt: null },
+    });
+
+    assert.equal(patch.confirmedAt?.getTime(), addMinutes(now, -600).getTime());
+    assert.equal(patch.checkedInAt?.getTime(), now.getTime());
+  });
+
+  it('invents no timestamp for in_progress', () => {
+    const patch = applyStatusPath({
+      from: 'checked_in',
+      path: ['in_progress'],
+      now,
+      actorId,
+      existing: { confirmedAt: null, checkedInAt: now },
+    });
+
+    assert.equal(patch.status, 'in_progress');
+    assert.equal(patch.completedAt, undefined);
+  });
+
+  it('is a no-op for an empty path', () => {
+    const patch = applyStatusPath({ from: 'completed', path: [], now, actorId });
+    assert.deepEqual(patch, { status: 'completed' });
   });
 });
