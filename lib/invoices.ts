@@ -122,8 +122,31 @@ export async function buildLinesFromVisit(
     ).map((r) => r.visitProcedureId)
   );
 
+  // The same work, billed from the other side. buildLinesFromTreatmentPlan()
+  // writes visitProcedureId: null, so a plan invoice is invisible to the set
+  // above — invoice an accepted plan and then invoice the visit that performed
+  // it, and the patient is charged twice. (The reverse order is already safe:
+  // lines built from a visit carry BOTH pointers.)
+  //
+  // The seed enforces this by hand — scripts/seed/06-billing.mjs: "a plan
+  // invoice only carries items that have NOT been through a chair yet" — which
+  // made the demo data look clean while production was not.
+  const alreadyInvoicedPlanItems = new Set(
+    (
+      await tx
+        .select({ treatmentPlanItemId: invoiceItems.treatmentPlanItemId })
+        .from(invoiceItems)
+        .where(isNotNull(invoiceItems.treatmentPlanItemId))
+    ).map((r) => r.treatmentPlanItemId)
+  );
+
   return performed
-    .filter((p) => p.status !== 'cancelled' && !alreadyInvoiced.has(p.id))
+    .filter(
+      (p) =>
+        p.status !== 'cancelled' &&
+        !alreadyInvoiced.has(p.id) &&
+        !(p.treatmentPlanItemId && alreadyInvoicedPlanItems.has(p.treatmentPlanItemId))
+    )
     .map((p) => {
       const quantity = p.isPerTooth && p.teeth ? toothCount(p.teeth) : 1;
       return {

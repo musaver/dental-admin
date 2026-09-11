@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
   adminUsers,
+  invoiceItems,
+  invoices,
   patients,
   prescriptionItems,
   prescriptions,
@@ -15,7 +17,7 @@ import {
   type AppointmentAdvanceResult,
 } from '@/lib/appointment-lifecycle';
 import { withAuth } from '@/lib/rbac';
-import { PERMISSIONS } from '@/lib/permissions';
+import { PERMISSIONS, hasPermission } from '@/lib/permissions';
 import { loadVisit } from '@/lib/loaders';
 import { writeAuditLog } from '@/lib/audit';
 import {
@@ -27,7 +29,7 @@ import {
 } from '@/lib/enums';
 import { generateRecallsForVisit } from '@/lib/recalls';
 import { clinicNow } from '@/lib/datetime';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { asc, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -44,9 +46,18 @@ type Params = { params: Promise<{ id: string }> };
 
 export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params }: Params) => {
   const { id } = await params;
+  // loadVisit has already branch-checked the row, so everything below is in
+  // scope by construction.
   const visit = await loadVisit(ctx, id);
 
-  const [performed, diagnoses, rxHeaders, [patient], [dentist]] = await Promise.all([
+  // The page shapes itself to the caller's permissions, computed here rather
+  // than from the session — same pattern as the patient summary route. Two
+  // flags, not one: billing_view reveals the invoices, billing_create is what
+  // POST /api/invoices actually enforces.
+  const canBilling = hasPermission(ctx.permissions, PERMISSIONS.BILLING_VIEW);
+  const canRaiseInvoice = hasPermission(ctx.permissions, PERMISSIONS.BILLING_CREATE);
+
+  const [performed, diagnoses, rxHeaders, [patient], [dentist], raised] = await Promise.all([
     db
       .select({
         id: visitProcedures.id,
@@ -96,7 +107,44 @@ export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params
       .from(adminUsers)
       .where(eq(adminUsers.id, visit.dentistId))
       .limit(1),
+    // invoices.visitId is the right link, not invoice_items.visitProcedureId:
+    // createInvoice() always stamps it when a visitId was supplied, and the
+    // manual-line path cannot carry a visitProcedureId at all — so no invoice
+    // bills this visit without pointing at it.
+    canBilling
+      ? db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            issueDate: invoices.issueDate,
+            totalAmount: invoices.totalAmount,
+            paidAmount: invoices.paidAmount,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.visitId, id))
+          .orderBy(desc(invoices.issueDate))
+      : Promise.resolve([]),
   ]);
+
+  // Which performed procedures are already on an invoice, so the page can mark
+  // them and hide the "Raise invoice" button once there is nothing left.
+  //
+  // Filtered by inArray, deliberately unlike buildLinesFromVisit(), which
+  // reads every invoice_items row with a non-null visitProcedureId in the
+  // table. That is fine inside a transaction about to write; it must not
+  // become a full index scan on every page load.
+  const visitProcedureIds = performed.map((p) => p.id);
+  const invoicedIds = new Set(
+    canBilling && visitProcedureIds.length
+      ? (
+          await db
+            .select({ visitProcedureId: invoiceItems.visitProcedureId })
+            .from(invoiceItems)
+            .where(inArray(invoiceItems.visitProcedureId, visitProcedureIds))
+        ).map((r) => r.visitProcedureId)
+      : []
+  );
 
   const rxIds = rxHeaders.map((r) => r.id);
   const rxLines = rxIds.length
@@ -111,7 +159,11 @@ export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params
     visit,
     patient: patient ?? null,
     dentist: dentist ?? null,
-    procedures: performed,
+    permissions: { billing: canBilling, billingCreate: canRaiseInvoice },
+    invoices: raised,
+    // Gated on canBilling so a clinical-only viewer learns nothing about
+    // money; the button is hidden for them anyway, so the two stay consistent.
+    procedures: performed.map((p) => ({ ...p, invoiced: invoicedIds.has(p.id) })),
     diagnoses,
     prescriptions: rxHeaders.map((rx) => ({
       ...rx,

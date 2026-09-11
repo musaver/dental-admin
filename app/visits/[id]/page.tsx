@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +30,8 @@ interface VisitData {
   };
   patient: { id: string; mrn: string; firstName: string; lastName: string | null } | null;
   dentist: { id: string; name: string | null; licenseNumber: string | null } | null;
+  permissions: { billing: boolean; billingCreate: boolean };
+  invoices: InvoiceRow[];
   procedures: PerformedRow[];
   diagnoses: DiagnosisRow[];
   prescriptions: RxRow[];
@@ -37,6 +39,11 @@ interface VisitData {
 interface PerformedRow {
   id: string; procedureName: string | null; teeth: string | null;
   price: number; status: string; isPerTooth: boolean | null;
+  treatmentPlanItemId: string | null; invoiced: boolean;
+}
+interface InvoiceRow {
+  id: string; invoiceNumber: string; issueDate: string;
+  totalAmount: number; paidAmount: number; status: string;
 }
 interface DiagnosisRow {
   id: string; toothNumber: string | null; code: string | null; description: string;
@@ -51,6 +58,7 @@ const selectClass = 'h-9 w-full rounded-md border border-input bg-background px-
 
 export default function VisitPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const [data, setData] = useState<VisitData | null>(null);
   const [catalogue, setCatalogue] = useState<Procedure[]>([]);
   const [error, setError] = useState('');
@@ -96,6 +104,10 @@ export default function VisitPage() {
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'That did not save.');
+      // A colleague billed this first, or it is open in another tab. The
+      // message says "already been billed" while the button still claims
+      // otherwise, so reload rather than leaving the two disagreeing.
+      if (err instanceof ApiError && err.code === 'NOTHING_TO_INVOICE') await load();
     } finally {
       setBusy(false);
     }
@@ -107,6 +119,11 @@ export default function VisitPage() {
   if (!data) return <div className="p-4 text-muted-foreground">Loading…</div>;
 
   const editable = data.visit.status === 'in_progress';
+  const can = data.permissions;
+  const completed = data.visit.status === 'completed';
+  // Mirrors buildLinesFromVisit()'s filter predicate-for-predicate. If the two
+  // drift, the button offers an invoice the server will refuse.
+  const hasUnbilled = data.procedures.some((p) => p.status !== 'cancelled' && !p.invoiced);
   const chosen = catalogue.find((p) => p.id === newProcedure.procedureId);
   const chosenTeeth = parseTeeth(newProcedure.teeth.split(/[\s,]+/).join(','));
   const chosenUnits = chosen?.isPerTooth && chosenTeeth.length ? chosenTeeth.length : 1;
@@ -202,6 +219,9 @@ export default function VisitPage() {
                 <div>
                   <span className="font-medium">{p.procedureName ?? 'Procedure'}</span>
                   {p.teeth && <span className="text-muted-foreground"> · teeth {p.teeth}</span>}
+                  {can.billing && p.invoiced && (
+                    <Badge variant="secondary" className="ml-2 text-[10px]">Invoiced</Badge>
+                  )}
                 </div>
                 <span>
                   {formatPKR(p.price * (p.isPerTooth && p.teeth ? toothCount(p.teeth) : 1))}
@@ -383,25 +403,78 @@ export default function VisitPage() {
         </CardContent>
       </Card>
 
-      {editable && (
-        <div className="flex gap-2">
+      {can.billing && data.invoices.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">Billing</CardTitle></CardHeader>
+          <CardContent>
+            <ul className="divide-y">
+              {data.invoices.map((inv) => (
+                <li key={inv.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <div>
+                    <Link href={`/billing/${inv.id}`} className="font-mono text-xs hover:underline">
+                      {inv.invoiceNumber}
+                    </Link>
+                    <span className="text-muted-foreground"> · {fmtDate(new Date(inv.issueDate))}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span>{formatPKR(inv.totalAmount)}</span>
+                    <Badge variant="secondary">{humanize(inv.status)}</Badge>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {editable && (
+          <>
+            <Button
+              variant="success"
+              disabled={busy}
+              onClick={() => run(() => api.put(`/api/visits/${id}`, { status: 'completed' }))}
+            >
+              Complete visit
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              Completing closes the appointment and generates any recalls.
+            </span>
+          </>
+        )}
+
+        {/* Only once the visit is closed: while it is in progress the
+            clinician can still add procedures, and billing mid-visit splits
+            one visit across two invoices for no benefit. */}
+        {completed && can.billingCreate && hasUnbilled && (
           <Button
-            variant="success"
+            variant="outline"
             disabled={busy}
-            onClick={() => run(() => api.put(`/api/visits/${id}`, { status: 'completed' }))}
+            onClick={() =>
+              run(async () => {
+                const result = await api.post<{ invoice: { id: string } }>('/api/invoices', {
+                  patientId: data.visit.patientId,
+                  visitId: data.visit.id,
+                });
+                router.push(`/billing/${result.invoice.id}`);
+              })
+            }
           >
-            Complete visit
+            Raise invoice
           </Button>
-          <span className="self-center text-xs text-muted-foreground">
-            Completing closes the appointment and generates any recalls.
+        )}
+        {completed && can.billingCreate && !hasUnbilled && (
+          <span className="text-sm text-muted-foreground">
+            Everything from this visit has been invoiced.
           </span>
-        </div>
-      )}
-      {!editable && (
-        <p className="text-sm text-muted-foreground">
-          This visit is {humanize(data.visit.status)} and read-only.
-        </p>
-      )}
+        )}
+
+        {!editable && (
+          <span className="text-sm text-muted-foreground">
+            This visit is {humanize(data.visit.status)} and read-only.
+          </span>
+        )}
+      </div>
     </div>
   );
 }
