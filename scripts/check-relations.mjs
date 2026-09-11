@@ -73,7 +73,12 @@ const PROBES = {
   prescriptionItems: { prescription: true },
   invoices: {
     patient: true, branch: true, visit: true, treatmentPlan: true,
-    createdByStaff: true, items: true, payments: true,
+    createdByStaff: true, items: true, payments: true, discountCode: true,
+  },
+  // The redemption ledger: invoices IS the many side, there is no
+  // redemptions table.
+  discountCodes: {
+    branch: true, createdByStaff: true, invoices: true,
   },
   invoiceItems: {
     invoice: true, procedure: true, visitProcedure: true, treatmentPlanItem: true,

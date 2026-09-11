@@ -60,12 +60,19 @@ triggers** anywhere in the schema.
   `surfaces` is a packed string (`"MOD"`) in canonical order; `teeth` is a CSV.
   Only `lib/odontogram.ts` interprets these encodings.
 
-## Denormalised fields (seven) and pointer pairs (five)
+## Denormalised fields (eight) and pointer pairs (five)
 
 Recompute helpers in `lib/derive.ts` are the **only** writers for:
 `patients.hasAlerts`, `invoices.paidAmount`, `invoices.status`,
 `treatment_plans.{totalAmount,discountTotal,netAmount}`,
 `treatment_plan_items.netAmount`.
+
+`discount_codes.usedCount` is the eighth, and the one exception to that rule:
+its live writer is the conditional `UPDATE` in `lib/discount-codes.ts`, because
+only a single guarded statement can enforce a usage limit against concurrent
+redemption — a recompute-from-source would let two transactions count the same
+rows and both write N+1. `recomputeDiscountCodeUsage()` is the repair path, and
+`check:invariants` detects drift against the invoices that redeemed it.
 
 Bidirectional pairs are written both-sides-in-one-transaction, via the helpers
 in `lib/derive.ts` / `lib/recalls.ts`:

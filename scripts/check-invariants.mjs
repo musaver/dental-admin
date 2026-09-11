@@ -65,6 +65,31 @@ await expectEmpty(
     WHERE i.totalAmount <> COALESCE(li.total, 0)`
 );
 
+// A bill that owes the patient money. The check above CANNOT catch this: for a
+// discount line, computeInvoiceTotals folds back the amount materialiseLines
+// stored, so subtotal - discountTotal equals SUM(amount) at every value,
+// negative ones included. Such a row also subtracts from the branch's
+// outstanding total in lib/reports.ts, cancelling another patient's real debt.
+await expectEmpty(
+  'no invoice has a negative totalAmount',
+  `SELECT id, invoiceNumber, subtotal, discountTotal, totalAmount
+     FROM invoices
+    WHERE totalAmount < 0`
+);
+
+// discount_codes.usedCount is the eighth denormalised field. Its live writer is
+// the conditional UPDATE in lib/discount-codes.ts; this is what detects drift.
+await expectEmpty(
+  'discount_codes.usedCount matches the invoices redeeming it',
+  `SELECT dc.id, dc.code, dc.usedCount AS storedValue, COALESCE(r.total, 0) AS computedValue
+     FROM discount_codes dc
+     LEFT JOIN (
+       SELECT discountCodeId, COUNT(*) AS total
+         FROM invoices WHERE discountCodeId IS NOT NULL GROUP BY discountCodeId
+     ) r ON r.discountCodeId = dc.id
+    WHERE dc.usedCount <> COALESCE(r.total, 0)`
+);
+
 // The plan invariant: netAmount = totalAmount - discountTotal.
 await expectEmpty(
   'treatment_plans.netAmount = totalAmount - discountTotal',
@@ -162,6 +187,7 @@ const DANGLING = [
   ['treatment_plan_items.treatmentPlanId', 'treatment_plan_items', 'treatmentPlanId', 'treatment_plans'],
   ['invoices.patientId', 'invoices', 'patientId', 'patients'],
   ['invoice_items.invoiceId', 'invoice_items', 'invoiceId', 'invoices'],
+  ['invoices.discountCodeId', 'invoices', 'discountCodeId', 'discount_codes'],
   ['payments.patientId', 'payments', 'patientId', 'patients'],
   ['payments.invoiceId', 'payments', 'invoiceId', 'invoices'],
   ['patient_files.patientId', 'patient_files', 'patientId', 'patients'],
