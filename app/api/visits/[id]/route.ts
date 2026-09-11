@@ -29,7 +29,7 @@ import {
 } from '@/lib/enums';
 import { generateRecallsForVisit } from '@/lib/recalls';
 import { clinicNow } from '@/lib/datetime';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { asc, desc, eq, inArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 const updateSchema = z.object({
@@ -130,21 +130,43 @@ export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params
   // Which performed procedures are already on an invoice, so the page can mark
   // them and hide the "Raise invoice" button once there is nothing left.
   //
-  // Filtered by inArray, deliberately unlike buildLinesFromVisit(), which
-  // reads every invoice_items row with a non-null visitProcedureId in the
-  // table. That is fine inside a transaction about to write; it must not
-  // become a full index scan on every page load.
+  // BOTH pointers, because buildLinesFromVisit() skips on both: work billed
+  // through its treatment plan carries a treatmentPlanItemId and no
+  // visitProcedureId. Checking only the latter would leave a dead "Raise
+  // invoice" button on a plan-billed visit — it would 409 and come straight
+  // back. This has to mirror that builder exactly or the page lies.
   const visitProcedureIds = performed.map((p) => p.id);
-  const invoicedIds = new Set(
+  const planItemIds = performed
+    .map((p) => p.treatmentPlanItemId)
+    .filter((planItemId): planItemId is string => Boolean(planItemId));
+
+  const billedRows =
     canBilling && visitProcedureIds.length
-      ? (
-          await db
-            .select({ visitProcedureId: invoiceItems.visitProcedureId })
-            .from(invoiceItems)
-            .where(inArray(invoiceItems.visitProcedureId, visitProcedureIds))
-        ).map((r) => r.visitProcedureId)
-      : []
-  );
+      ? await db
+          .select({
+            visitProcedureId: invoiceItems.visitProcedureId,
+            treatmentPlanItemId: invoiceItems.treatmentPlanItemId,
+          })
+          .from(invoiceItems)
+          // Filtered, deliberately unlike buildLinesFromVisit(), which reads
+          // every matching row in the table. That is fine inside a transaction
+          // about to write; it must not become a full scan on every page load.
+          .where(
+            planItemIds.length
+              ? or(
+                  inArray(invoiceItems.visitProcedureId, visitProcedureIds),
+                  inArray(invoiceItems.treatmentPlanItemId, planItemIds)
+                )
+              : inArray(invoiceItems.visitProcedureId, visitProcedureIds)
+          )
+      : [];
+
+  const billedVisitProcedures = new Set(billedRows.map((r) => r.visitProcedureId));
+  const billedPlanItems = new Set(billedRows.map((r) => r.treatmentPlanItemId));
+
+  const isInvoiced = (p: { id: string; treatmentPlanItemId: string | null }) =>
+    billedVisitProcedures.has(p.id) ||
+    Boolean(p.treatmentPlanItemId && billedPlanItems.has(p.treatmentPlanItemId));
 
   const rxIds = rxHeaders.map((r) => r.id);
   const rxLines = rxIds.length
@@ -163,7 +185,7 @@ export const GET = withAuth(PERMISSIONS.CLINICAL_VIEW, async (req, ctx, { params
     invoices: raised,
     // Gated on canBilling so a clinical-only viewer learns nothing about
     // money; the button is hidden for them anyway, so the two stay consistent.
-    procedures: performed.map((p) => ({ ...p, invoiced: invoicedIds.has(p.id) })),
+    procedures: performed.map((p) => ({ ...p, invoiced: isInvoiced(p) })),
     diagnoses,
     prescriptions: rxHeaders.map((rx) => ({
       ...rx,
