@@ -83,10 +83,27 @@ export const patientUpdateSchema = patientCreateSchema
 export type PatientCreateInput = z.infer<typeof patientCreateSchema>;
 export type PatientUpdateInput = z.infer<typeof patientUpdateSchema>;
 
+/**
+ * zod issues keyed by dotted path.
+ *
+ * `flatten().fieldErrors` only knows about top-level keys, so every complaint
+ * about a nested object collapses onto the object's own name — a form told
+ * "newPatient is wrong" can highlight nothing. This keeps the path, giving
+ * `newPatient.firstName`, and is a superset of flatten() for flat schemas.
+ */
+export function fieldErrors(error: z.ZodError): Record<string, string[]> {
+  const details: Record<string, string[]> = {};
+  for (const issue of error.issues) {
+    const key = issue.path.length ? issue.path.join('.') : '_';
+    (details[key] ??= []).push(issue.message);
+  }
+  return details;
+}
+
 /** Turn a zod failure into the house error body. */
 export function validationError(error: z.ZodError) {
   return {
     error: 'Please correct the highlighted fields.',
-    details: error.flatten().fieldErrors,
+    details: fieldErrors(error),
   };
 }

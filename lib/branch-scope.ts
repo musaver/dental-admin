@@ -86,6 +86,49 @@ export function resolveBranchScope(
   return { branchIds: [own], activeBranchId: own };
 }
 
+/**
+ * Which branch a newly registered record belongs to.
+ *
+ * Distinct from resolveBranchScope(), which answers "what may this request
+ * read". A write has to name exactly one branch, and for head office there is
+ * no sensible default: a patient registered into "every branch" is not a thing,
+ * and guessing puts their whole clinical history in the wrong clinic. So head
+ * office must say, and null here means "ask them" — the caller turns it into a
+ * field-level 400 the form can highlight.
+ *
+ * A scoped user always registers into their own branch; naming another is a
+ * 403 rather than a silent redirect, for the same reason as in
+ * resolveBranchScope().
+ */
+export function resolveWritingBranch(
+  ctx: BranchScopable,
+  requested?: string | null
+): string | null {
+  if (ctx.isHeadOffice) {
+    // 'all' is a read-side idiom; it cannot name a branch to write into.
+    return requested && requested !== 'all' ? requested : null;
+  }
+
+  const own = ctx.branchId;
+  if (own === null) {
+    throw new AuthError(
+      AUTH_FAILURE.FORBIDDEN,
+      403,
+      'Your account is not assigned to a branch.'
+    );
+  }
+
+  if (requested && requested !== 'all' && requested !== own) {
+    throw new AuthError(
+      AUTH_FAILURE.FORBIDDEN,
+      403,
+      'You cannot register into another branch.'
+    );
+  }
+
+  return own;
+}
+
 /** True when the caller may act on a row belonging to `branchId`. */
 export function canAccessBranch(ctx: BranchScopable, branchId: string | null): boolean {
   if (ctx.isHeadOffice) return true;
